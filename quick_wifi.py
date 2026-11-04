@@ -107,6 +107,8 @@ def main():
             SCRCPY_EXE,
             "-d",
             "--display-id=0",
+            "--max-size=1200",
+            "--video-bit-rate=8M",
             "--stay-awake",
             "--keyboard=uhid"
         ]
@@ -126,6 +128,8 @@ def main():
             SCRCPY_EXE,
             "-s", f"{ip}:5555",
             "--display-id=0",
+            "--max-size=1200",
+            "--video-bit-rate=8M",
             "--stay-awake",
             "--keyboard=uhid"
         ]
