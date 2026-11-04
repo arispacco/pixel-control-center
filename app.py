@@ -94,10 +94,13 @@ class PixelControlApp(ctk.CTk):
         for line in out.splitlines():
             parts = line.split()
             if len(parts) >= 2 and parts[1] == "device":
-                if ":" in parts[0]:
-                    wifi.append(parts[0])
+                serial = parts[0]
+                if serial.startswith("emulator-") or serial.startswith("127.0.0.1"):
+                    continue
+                if ":" in serial:
+                    wifi.append(serial)
                 else:
-                    usb.append(parts[0])
+                    usb.append(serial)
         return usb, wifi
 
     def update_ip_entry(self, ip):
@@ -669,24 +672,29 @@ class PixelControlApp(ctk.CTk):
                             self.after(0, notify_no_wifi)
                             return
 
+            target_adb = ["-d"] if target_mode == "usb" else ["-s", f"{ip}:{port}"]
+
             # 3. Nettoyer les écrans virtuels fantômes et réveiller le téléphone
-            self.run_adb(["shell", "pkill -9 -f app_process"])
+            self.run_adb(target_adb + ["shell", "pkill", "-9", "-f", "app_process"])
             time.sleep(0.2)
 
             args = ["--display-id=0"]
             if target_mode == "usb":
-                self.run_adb(["-d", "shell", "input", "keyevent", "224"])
                 args.append("-d")
             else:
-                self.run_adb(["-s", f"{ip}:{port}", "shell", "input", "keyevent", "224"])
                 args.extend(["-s", f"{ip}:{port}"])
+
+            self.run_adb(target_adb + ["shell", "input", "keyevent", "224"])
+            self.run_adb(target_adb + ["shell", "wm", "dismiss-keyguard"])
 
             if self.sw_turn_off.get():
                 # Sur Google Pixel Tensor, turn-screen-off coupe le flux vidéo et produit un écran noir sur PC.
                 # On règle la luminosité à 0 (noir OLED) pour protéger la dalle tout en gardant l'image sur PC !
-                self.run_adb(["shell", "settings", "put", "system", "screen_brightness", "0"])
+                self.run_adb(target_adb + ["shell", "settings", "put", "system", "screen_brightness", "0"])
             else:
-                self.run_adb(["shell", "settings", "put", "system", "screen_brightness", "100"])
+                self.run_adb(target_adb + ["shell", "settings", "put", "system", "screen_brightness", "100"])
+
+            self.run_adb(target_adb + ["shell", "settings", "put", "secure", "show_ime_with_hard_keyboard", "1"])
             if self.sw_stay_awake.get():
                 args.append("--stay-awake")
             if self.sw_always_on_top.get():
