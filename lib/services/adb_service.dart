@@ -75,7 +75,9 @@ class AdbService {
 
       final serial = parts[0];
       final state = parts[1];
-      if (state != 'device') {
+      if (state != 'device' ||
+          serial.startsWith('emulator-') ||
+          serial.startsWith('127.0.0.1')) {
         continue;
       }
 
@@ -252,6 +254,18 @@ class AdbService {
       'input',
       'keyevent',
       keyCode.toString(),
+    ]);
+    return result.exitCode == 0;
+  }
+
+  /// Dismisses the Android lock screen keyguard if the phone is locked.
+  Future<bool> unlockKeyguard(DeviceInfo device) async {
+    final target = getDeviceTargetFlags(device);
+    final result = await execute([
+      ...target,
+      'shell',
+      'wm',
+      'dismiss-keyguard',
     ]);
     return result.exitCode == 0;
   }

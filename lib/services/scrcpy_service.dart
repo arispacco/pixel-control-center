@@ -66,6 +66,9 @@ class ScrcpyService {
     }
 
     // Apply Android hardware settings before launch.
+    await adbService.terminateRemoteServerProcesses(device);
+    await adbService.sendKeyEvent(device, 224);
+    await adbService.unlockKeyguard(device);
     await adbService.ensureVirtualKeyboardVisible(device);
     if (options.useBrightnessWorkaround) {
       _logController.add('[INFO] Réduction de la luminosité écran (workaround Tensor G2)...');
