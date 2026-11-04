@@ -60,7 +60,7 @@ class PixelControlApp(ctk.CTk):
             "fullscreen": False,
             "audio": True,
             "uhid_keyboard": True,
-            "resolution": "Originale (Sans limite)",
+            "resolution": "1080p (Full HD)",
             "bitrate": "8 Mbps (Standard)",
             "fps": "60 FPS (Très fluide)"
         }
@@ -102,6 +102,14 @@ class PixelControlApp(ctk.CTk):
                 else:
                     usb.append(serial)
         return usb, wifi
+
+    def get_target(self):
+        usb, wifi = self.get_connected_devices()
+        if usb:
+            return ["-d"]
+        elif wifi:
+            return ["-s", wifi[0]]
+        return []
 
     def update_ip_entry(self, ip):
         self.entry_ip.delete(0, "end")
@@ -526,15 +534,15 @@ class PixelControlApp(ctk.CTk):
 
             def probe(host):
                 try:
-                    with socket.create_connection((host, 5555), timeout=0.8):
+                    with socket.create_connection((host, 5555), timeout=0.2):
                         return host
                 except Exception:
                     return None
 
             ips = [f"{subnet}.{i}" for i in range(1, 255) if f"{subnet}.{i}" != my_ip]
-            with concurrent.futures.ThreadPoolExecutor(max_workers=50) as ex:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=60) as ex:
                 for r in ex.map(probe, ips):
-                    if r:
+                    if r and r != "127.0.0.1":
                         return r, "5555"
 
         return None, None
@@ -588,13 +596,21 @@ class PixelControlApp(ctk.CTk):
                     wifi.append(f"{discovered_ip}:5555")
                     device_names.append(f"Wi-Fi ({discovered_ip}:5555)")
 
-            battery_info = self.run_adb(["shell", "dumpsys", "battery"])
+            target = self.get_target()
             level = "Inconnu"
-            for b_line in battery_info.splitlines():
-                if "level:" in b_line:
-                    level = b_line.split(":")[-1].strip() + "%"
-
-            self.run_adb(["shell", "settings", "put", "secure", "show_ime_with_hard_keyboard", "1"])
+            temp = ""
+            if target:
+                battery_info = self.run_adb(target + ["shell", "dumpsys", "battery"])
+                for b_line in battery_info.splitlines():
+                    if "level:" in b_line:
+                        level = b_line.split(":")[-1].strip() + "%"
+                    elif "temperature:" in b_line:
+                        try:
+                            t_val = int(b_line.split(":")[-1].strip()) / 10.0
+                            temp = f" • {t_val:.1f}°C"
+                        except Exception:
+                            pass
+                self.run_adb(target + ["shell", "settings", "put", "secure", "show_ime_with_hard_keyboard", "1"])
 
             def update_ui():
                 if discovered_ip:
@@ -609,7 +625,7 @@ class PixelControlApp(ctk.CTk):
                 else:
                     self.status_badge.configure(text="● Aucun appareil détecté", text_color="#ef4444")
 
-                txt = f"Appareils : {', '.join(device_names) if device_names else 'Aucun'}\nBatterie : {level}"
+                txt = f"Appareils : {', '.join(device_names) if device_names else 'Aucun'}\nBatterie : {level}{temp}"
                 self.lbl_device_info.configure(text=txt)
                 self.info_label.configure(text="Appareils actualisés avec succès.")
 
@@ -787,24 +803,31 @@ class PixelControlApp(ctk.CTk):
 
     def send_key(self, code):
         def task():
-            self.run_adb(["shell", "input", "keyevent", str(code)])
-            self.info_label.configure(text=f"Commande touche envoyée (Code {code})")
+            target = self.get_target()
+            if target:
+                self.run_adb(target + ["shell", "input", "keyevent", str(code)])
+                self.info_label.configure(text=f"Commande touche envoyée (Code {code})")
         threading.Thread(target=task, daemon=True).start()
 
     def unlock_phone(self):
         def task():
-            self.run_adb(["shell", "input", "keyevent", "224"])
-            time.sleep(0.3)
-            self.run_adb(["shell", "input", "keyevent", "82"])
-            self.info_label.configure(text="Ordre de déverrouillage envoyé.")
+            target = self.get_target()
+            if target:
+                self.run_adb(target + ["shell", "input", "keyevent", "224"])
+                time.sleep(0.1)
+                self.run_adb(target + ["shell", "wm", "dismiss-keyguard"])
+                self.info_label.configure(text="Ordre de déverrouillage envoyé.")
         threading.Thread(target=task, daemon=True).start()
 
     def take_screenshot(self):
         self.info_label.configure(text="Capture d'écran en cours...")
         def task():
+            target = self.get_target()
+            if not target:
+                return
             out_file = os.path.join(os.path.expanduser("~"), "Desktop", f"pixel_capture_{int(time.time())}.png")
-            self.run_adb(["shell", "screencap", "-p", "/sdcard/temp_screen.png"])
-            self.run_adb(["pull", "/sdcard/temp_screen.png", out_file])
+            self.run_adb(target + ["shell", "screencap", "-p", "/sdcard/temp_screen.png"])
+            self.run_adb(target + ["pull", "/sdcard/temp_screen.png", out_file])
             def done():
                 self.info_label.configure(text="Capture enregistrée sur le Bureau !")
                 if os.path.exists(out_file):
