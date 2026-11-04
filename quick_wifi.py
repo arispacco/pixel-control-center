@@ -27,8 +27,13 @@ def run_adb(args):
 def discover_ip():
     out = run_adb(["devices"])
     for line in out.splitlines():
-        if ":5555" in line and "device" in line:
-            return line.split(":")[0].strip()
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            serial = parts[0]
+            if serial.startswith("emulator-"):
+                continue
+            if ":5555" in serial:
+                return serial.split(":")[0].strip()
 
     usb_route = run_adb(["-d", "shell", "ip", "route"])
     if "src" in usb_route:
@@ -45,7 +50,9 @@ def discover_ip():
     mdns_out = run_adb(["mdns", "services"])
     m = re.findall(r'(\d+\.\d+\.\d+\.\d+):(\d+)', mdns_out)
     if m:
-        return m[0][0]
+        for candidate_ip, port in m:
+            if candidate_ip != "127.0.0.1":
+                return candidate_ip
 
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -70,27 +77,32 @@ def discover_ip():
         ips = [f"{subnet}.{i}" for i in range(1, 255) if f"{subnet}.{i}" != my_ip]
         with concurrent.futures.ThreadPoolExecutor(max_workers=50) as ex:
             for r in ex.map(probe, ips):
-                if r:
+                if r and r != "127.0.0.1":
                     return r
 
     return None
 
 
 def main():
-    # Nettoyer d'éventuels processus zombies sur le téléphone qui créent des écrans virtuels noirs
-    run_adb(["shell", "pkill -9 -f app_process"])
-
-    # Détecter si le câble USB est branché
+    # Détecter si le câble USB est branché (en ignorant les émulateurs BlueStacks)
     devices_out = run_adb(["devices"])
     usb_connected = False
     for line in devices_out.splitlines():
         parts = line.split()
-        if len(parts) >= 2 and parts[1] == "device" and ":" not in parts[0]:
-            usb_connected = True
-            break
+        if len(parts) >= 2 and parts[1] == "device":
+            serial = parts[0]
+            if serial.startswith("emulator-") or serial.startswith("127.0.0.1"):
+                continue
+            if ":" not in serial:
+                usb_connected = True
+                break
 
     if usb_connected:
-        run_adb(["-d", "shell", "input", "keyevent", "224"])
+        target_flags = ["-d"]
+        # Nettoyer les processus zombies et réveiller
+        run_adb(target_flags + ["shell", "pkill", "-9", "-f", "app_process"])
+        run_adb(target_flags + ["shell", "input", "keyevent", "224"])
+        run_adb(target_flags + ["shell", "wm", "dismiss-keyguard"])
         cmd = [
             SCRCPY_EXE,
             "-d",
@@ -103,8 +115,12 @@ def main():
         if not ip:
             ip = "192.168.100.178"
 
+        target_flags = ["-s", f"{ip}:5555"]
         run_adb(["connect", f"{ip}:5555"])
-        run_adb(["-s", f"{ip}:5555", "shell", "input", "keyevent", "224"])
+        # Nettoyer les processus zombies et réveiller
+        run_adb(target_flags + ["shell", "pkill", "-9", "-f", "app_process"])
+        run_adb(target_flags + ["shell", "input", "keyevent", "224"])
+        run_adb(target_flags + ["shell", "wm", "dismiss-keyguard"])
 
         cmd = [
             SCRCPY_EXE,
