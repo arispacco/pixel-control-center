@@ -1,5 +1,5 @@
 name: pixel_control_center
-description: "Desktop control center and screen mirroring client for Google Pixel and Android devices."
+description: "Universal Android screen mirroring, zero-ADB live Wi-Fi casting, and desktop remote control center (Samsung, Xiaomi, Tecno, Infinix, Oppo, Google Pixel)."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
