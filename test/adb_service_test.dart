@@ -11,23 +11,25 @@ void main() {
       adbService = AdbService();
     });
 
-    test('parseDevicesOutput extracts USB and Wi-Fi devices correctly', () {
+    test('parseDevicesOutput extracts multi-brand Android USB and Wi-Fi devices', () {
       const mockOutput = '''
 List of devices attached
-28301FDH300557         device product:cheetah model:Pixel_7_Pro device:cheetah transport_id:1
+R5CW21ABCD             device product:dm3qxxx model:SM_S918B device:dm3q transport_id:1
 192.168.100.178:5555   device product:cheetah model:Pixel_7_Pro device:cheetah transport_id:2
+0987654321ABCDEF       device product:CK7n_GL model:TECNO_CK7n device:TECNO-CK7n transport_id:4
 unauthorized_serial    unauthorized transport_id:3
 ''';
 
       final devices = adbService.parseDevicesOutput(mockOutput);
 
-      expect(devices.length, 2);
+      expect(devices.length, 3);
 
-      final usb = devices[0];
-      expect(usb.serial, '28301FDH300557');
-      expect(usb.model, 'Pixel 7 Pro');
-      expect(usb.connectionMode, ConnectionMode.usb);
-      expect(usb.isUsb, isTrue);
+      final samsungUsb = devices[0];
+      expect(samsungUsb.serial, 'R5CW21ABCD');
+      expect(samsungUsb.model, 'SM S918B');
+      expect(samsungUsb.connectionMode, ConnectionMode.usb);
+      expect(samsungUsb.isUsb, isTrue);
+      expect(samsungUsb.isGooglePixel, isFalse);
 
       final wifi = devices[1];
       expect(wifi.serial, '192.168.100.178:5555');
@@ -36,6 +38,12 @@ unauthorized_serial    unauthorized transport_id:3
       expect(wifi.ipAddress, '192.168.100.178');
       expect(wifi.port, 5555);
       expect(wifi.isWifi, isTrue);
+      expect(wifi.isGooglePixel, isTrue);
+
+      final tecnoUsb = devices[2];
+      expect(tecnoUsb.serial, '0987654321ABCDEF');
+      expect(tecnoUsb.model, 'TECNO CK7n');
+      expect(tecnoUsb.isGooglePixel, isFalse);
     });
 
     test('getDeviceTargetFlags returns -d for USB and -s for Wi-Fi', () {

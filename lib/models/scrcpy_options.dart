@@ -16,12 +16,17 @@ class ScrcpyOptions {
   /// Whether the device is kept awake while connected to the PC host.
   final bool stayAwake;
 
-  /// Whether physical display backlight is lowered to 0 through software settings
-  /// rather than invoking `--turn-screen-off`.
+  /// Whether the phone's physical screen should be turned off during mirroring
+  /// to save battery and protect OLED panels.
   ///
-  /// On Google Tensor SoCs (such as the Pixel 7 Pro), hardware encoder buffers
-  /// are blanked when `POWER_MODE_OFF` is triggered. Using software brightness
-  /// prevents black output while still protecting OLED displays.
+  /// On standard Android devices (Samsung, Xiaomi, Tecno, Infinix, Oppo, etc.),
+  /// native `--turn-screen-off` is passed to `scrcpy`. On Google Pixel / Tensor
+  /// devices where `POWER_MODE_OFF` blanks the hardware video encoder, software
+  /// brightness dimming is automatically used instead.
+  final bool turnScreenOff;
+
+  /// Whether physical display backlight is forced to 0 through software settings
+  /// rather than invoking `--turn-screen-off`.
   final bool useBrightnessWorkaround;
 
   /// Whether audio streaming is forwarded from the phone to host speakers.
@@ -30,7 +35,8 @@ class ScrcpyOptions {
   /// Whether touch indicators are drawn on the mirrored stream.
   final bool showTouches;
 
-  /// Whether physical hardware keyboard events are synthesized via Linux UHID.
+  /// Whether physical hardware keyboard events are synthesized via Linux UHID
+  /// (automatically skipped on Android 8–10 devices with SDK < 30).
   final bool uhidKeyboard;
 
   /// Whether to disable computer input controls (mouse, keyboard, touch events).
@@ -46,14 +52,15 @@ class ScrcpyOptions {
   /// virtual displays created during previous sessions.
   final int displayId;
 
-  /// Creates a [ScrcpyOptions] instance with production-hardened defaults for
-  /// Google Pixel hardware.
+  /// Creates a [ScrcpyOptions] instance with universal defaults compatible
+  /// across all Android smartphones (Android 8.0+).
   const ScrcpyOptions({
     this.maxSize = 0,
     this.bitRate = 16000000,
     this.maxFps = 60,
     this.stayAwake = true,
-    this.useBrightnessWorkaround = true,
+    this.turnScreenOff = false,
+    this.useBrightnessWorkaround = false,
     this.audioEnabled = true,
     this.showTouches = false,
     this.uhidKeyboard = true,
@@ -69,8 +76,6 @@ class ScrcpyOptions {
     if (device != null) {
       if (device.connectionMode == ConnectionMode.usb) {
         args.add('-d');
-      } else if (device.connectionMode == ConnectionMode.wifi) {
-        args.addAll(['-s', device.serial]);
       } else {
         args.addAll(['-s', device.serial]);
       }
@@ -91,18 +96,23 @@ class ScrcpyOptions {
     }
 
     // Power and input preferences.
-    if (stayAwake) {
+    if (stayAwake && !noControl) {
       args.add('--stay-awake');
     }
+    final isPixel = device?.isGooglePixel ?? false;
+    if (turnScreenOff && !useBrightnessWorkaround && !isPixel && !noControl) {
+      args.add('--turn-screen-off');
+    }
+    final supportsUhid = device?.sdkInt == null || device!.sdkInt! >= 30;
     if (noControl) {
       args.add('--no-control');
-    } else if (uhidKeyboard) {
+    } else if (uhidKeyboard && supportsUhid) {
       args.add('--keyboard=uhid');
     }
     if (showTouches) {
       args.add('--show-touches');
     }
-    if (!audioEnabled) {
+    if (!audioEnabled || (device?.sdkInt != null && device!.sdkInt! < 30)) {
       args.add('--no-audio');
     }
 
@@ -115,6 +125,7 @@ class ScrcpyOptions {
     int? bitRate,
     int? maxFps,
     bool? stayAwake,
+    bool? turnScreenOff,
     bool? useBrightnessWorkaround,
     bool? audioEnabled,
     bool? showTouches,
@@ -127,6 +138,7 @@ class ScrcpyOptions {
       bitRate: bitRate ?? this.bitRate,
       maxFps: maxFps ?? this.maxFps,
       stayAwake: stayAwake ?? this.stayAwake,
+      turnScreenOff: turnScreenOff ?? this.turnScreenOff,
       useBrightnessWorkaround:
           useBrightnessWorkaround ?? this.useBrightnessWorkaround,
       audioEnabled: audioEnabled ?? this.audioEnabled,

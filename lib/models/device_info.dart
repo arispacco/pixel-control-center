@@ -29,6 +29,13 @@ class DeviceInfo {
   /// Whether the device is fully authorized and receptive to shell commands.
   final bool isOnline;
 
+  /// Hardware manufacturer or brand reported by Android (`google`, `samsung`,
+  /// `xiaomi`, `tecno`, `infinix`, `oppo`, etc.).
+  final String? brand;
+
+  /// Android API SDK level (`26` for Android 8.0 through `36+`), if queried.
+  final int? sdkInt;
+
   /// Creates a validated [DeviceInfo] instance representing a discovered device.
   const DeviceInfo({
     required this.serial,
@@ -39,6 +46,8 @@ class DeviceInfo {
     this.ipAddress,
     this.port = 5555,
     this.isOnline = true,
+    this.brand,
+    this.sdkInt,
   });
 
   /// Whether this handset is currently bridged through a physical USB cable.
@@ -46,6 +55,28 @@ class DeviceInfo {
 
   /// Whether this handset is currently reachable through a local TCP/IP socket.
   bool get isWifi => connectionMode == ConnectionMode.wifi;
+
+  /// Whether this handset is a Google Pixel device requiring Tensor-specific
+  /// display encoder workarounds when turning the screen off.
+  bool get isGooglePixel {
+    final normalizedBrand = (brand ?? '').trim().toLowerCase();
+    final normalizedModel = model.trim().toLowerCase();
+    return normalizedBrand == 'google' || normalizedModel.contains('pixel');
+  }
+
+  /// Human-friendly label combining manufacturer brand and model without duplication.
+  String get displayName {
+    final rawBrand = (brand ?? '').trim();
+    if (rawBrand.isEmpty) {
+      return model;
+    }
+    if (model.toLowerCase().contains(rawBrand.toLowerCase())) {
+      return model;
+    }
+    final capitalized =
+        '${rawBrand[0].toUpperCase()}${rawBrand.substring(1).toLowerCase()}';
+    return '$capitalized $model';
+  }
 
   /// Returns a copy of this [DeviceInfo] with the given fields replaced by the
   /// non-null parameter values.
@@ -58,6 +89,8 @@ class DeviceInfo {
     String? ipAddress,
     int? port,
     bool? isOnline,
+    String? brand,
+    int? sdkInt,
   }) {
     return DeviceInfo(
       serial: serial ?? this.serial,
@@ -68,6 +101,8 @@ class DeviceInfo {
       ipAddress: ipAddress ?? this.ipAddress,
       port: port ?? this.port,
       isOnline: isOnline ?? this.isOnline,
+      brand: brand ?? this.brand,
+      sdkInt: sdkInt ?? this.sdkInt,
     );
   }
 

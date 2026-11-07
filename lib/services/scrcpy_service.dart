@@ -35,27 +35,16 @@ class ScrcpyService {
   ScrcpyService({
     required this.adbService,
     String? customScrcpyPath,
-  }) : scrcpyPath = customScrcpyPath ?? _findScrcpyExecutable();
-
-  /// Locates the `scrcpy` executable on the host machine.
-  static String _findScrcpyExecutable() {
-    if (Platform.isWindows) {
-      final localAppData = Platform.environment['LOCALAPPDATA'] ?? '';
-      final wingetPath =
-          '$localAppData\\Microsoft\\WinGet\\Packages\\Genymobile.scrcpy_Microsoft.Winget.Source_8wekyb3d8bbwe\\scrcpy-win64-v5.0.1\\scrcpy.exe';
-      if (File(wingetPath).existsSync()) {
-        return wingetPath;
-      }
-      return 'scrcpy.exe';
-    }
-    return 'scrcpy';
-  }
+  }) : scrcpyPath =
+            customScrcpyPath ?? AdbService.findBundledExecutable('scrcpy');
 
   /// Launches a new scrcpy mirroring session targeted at [device] with the
   /// given [options].
   ///
-  /// Applies Pixel 7 Pro hardware fixes (virtual keyboard visibility and OLED
-  /// brightness dimming) prior to launching.
+  /// Automatically adapts to all Android OEMs (Samsung, Xiaomi, Tecno, Infinix,
+  /// Oppo, Vivo, OnePlus, Google Pixel): applies native `--turn-screen-off` on
+  /// standard chipsets and falls back to software brightness preservation on
+  /// Google Tensor hardware.
   Future<bool> startMirroring({
     required DeviceInfo device,
     ScrcpyOptions options = const ScrcpyOptions(),
@@ -65,14 +54,27 @@ class ScrcpyService {
       return false;
     }
 
-    // Apply Android hardware settings before launch.
+    final shouldDimSoftware = options.useBrightnessWorkaround ||
+        (options.turnScreenOff && device.isGooglePixel);
+    ScreenBrightnessSnapshot? savedBrightness;
+
+    // Prepare Android display and input state before launch.
     await adbService.terminateRemoteServerProcesses(device);
-    await adbService.sendKeyEvent(device, 224);
-    await adbService.unlockKeyguard(device);
-    await adbService.ensureVirtualKeyboardVisible(device);
-    if (options.useBrightnessWorkaround) {
-      _logController.add('[INFO] Réduction de la luminosité écran (workaround Tensor G2)...');
-      await adbService.setScreenBrightness(device, dim: true);
+    if (!options.noControl) {
+      await adbService.sendKeyEvent(device, 224);
+      await adbService.unlockKeyguard(device);
+      await adbService.ensureVirtualKeyboardVisible(device);
+    }
+
+    if (shouldDimSoftware) {
+      _logController.add(
+        '[INFO] Extinction logicielle OLED activée (compatibilité Google Tensor) — sauvegarde de la luminosité actuelle...',
+      );
+      savedBrightness = await adbService.captureAndDimScreen(device);
+    } else if (options.turnScreenOff) {
+      _logController.add(
+        '[INFO] Extinction matérielle de l\'écran activée (--turn-screen-off) pour ${device.displayName}...',
+      );
     }
 
     final arguments = options.toArguments(device: device);
@@ -108,10 +110,10 @@ class ScrcpyService {
         _logController.add('[INFO] Session scrcpy terminée avec le code de sortie: $code');
         _activeProcess = null;
 
-        // Restore screen brightness when session finishes.
-        if (options.useBrightnessWorkaround) {
-          _logController.add('[INFO] Restauration de la luminosité écran normale...');
-          await adbService.setScreenBrightness(device, dim: false);
+        // Restore exact saved brightness and adaptive mode when session finishes.
+        if (shouldDimSoftware) {
+          _logController.add('[INFO] Restauration de la luminosité d\'origine...');
+          await adbService.restoreScreenBrightness(device, savedBrightness);
         }
       }));
 
@@ -120,8 +122,8 @@ class ScrcpyService {
       _logController.add('[ERROR] Échec du lancement de scrcpy: $e');
       _activeProcess = null;
 
-      if (options.useBrightnessWorkaround) {
-        await adbService.setScreenBrightness(device, dim: false);
+      if (shouldDimSoftware) {
+        await adbService.restoreScreenBrightness(device, savedBrightness);
       }
       return false;
     }

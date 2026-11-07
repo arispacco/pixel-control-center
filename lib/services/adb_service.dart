@@ -4,11 +4,25 @@ import 'dart:io';
 import '../models/connection_mode.dart';
 import '../models/device_info.dart';
 
+/// Captures a handset's prior display brightness settings so they can be
+/// restored accurately after a dimmed mirroring session ends.
+class ScreenBrightnessSnapshot {
+  /// Saved `screen_brightness` value (typically 0..255).
+  final int brightness;
+
+  /// Saved `screen_brightness_mode` (`1` for adaptive/auto, `0` for manual).
+  final int? mode;
+
+  /// Creates a [ScreenBrightnessSnapshot].
+  const ScreenBrightnessSnapshot({
+    required this.brightness,
+    this.mode,
+  });
+}
+
 /// Provides asynchronous process operations and command utilities for the
-/// Android Debug Bridge (ADB) daemon.
-///
-/// Encapsulates device discovery, power telemetry, and Google Pixel hardware
-/// quirks such as virtual keyboard passthrough and OLED brightness adjustments.
+/// Android Debug Bridge (ADB) daemon across all Android OEMs (Samsung, Xiaomi,
+/// Tecno, Infinix, Oppo, Vivo, OnePlus, Google Pixel, etc.).
 class AdbService {
   /// Executable name or absolute file path to the `adb` binary.
   final String adbPath;
@@ -16,21 +30,67 @@ class AdbService {
   /// Creates an [AdbService] instance, locating the binary from standard
   /// directories or PATH.
   AdbService({String? customAdbPath})
-      : adbPath = customAdbPath ?? _findAdbExecutable();
+      : adbPath = customAdbPath ?? findBundledExecutable('adb');
 
-  /// Locates the `adb` executable on the host file system.
-  static String _findAdbExecutable() {
-    if (Platform.isWindows) {
-      // Check Winget default installation path for scrcpy bundle.
-      final localAppData = Platform.environment['LOCALAPPDATA'] ?? '';
-      final wingetPath =
-          '$localAppData\\Microsoft\\WinGet\\Packages\\Genymobile.scrcpy_Microsoft.Winget.Source_8wekyb3d8bbwe\\scrcpy-win64-v5.0.1\\adb.exe';
-      if (File(wingetPath).existsSync()) {
-        return wingetPath;
-      }
-      return 'adb.exe';
+  /// Dynamically locates `adb` or `scrcpy` across WinGet installations,
+  /// Android SDK Platform-Tools, or the system `PATH`.
+  static String findBundledExecutable(String baseName) {
+    if (!Platform.isWindows) {
+      return baseName;
     }
-    return 'adb';
+
+    final exeName = '$baseName.exe';
+    final localAppData = Platform.environment['LOCALAPPDATA'] ?? '';
+    if (localAppData.isNotEmpty) {
+      final wingetPackages = Directory(
+        '$localAppData\\Microsoft\\WinGet\\Packages',
+      );
+      if (wingetPackages.existsSync()) {
+        try {
+          final scrcpyPackages = wingetPackages
+              .listSync()
+              .whereType<Directory>()
+              .where(
+                (dir) => dir.path
+                    .toLowerCase()
+                    .contains('genymobile.scrcpy'),
+              )
+              .toList();
+
+          for (final pkgDir in scrcpyPackages) {
+            final directExe = File('${pkgDir.path}\\$exeName');
+            if (directExe.existsSync()) {
+              return directExe.path;
+            }
+
+            final versionDirs = pkgDir
+                .listSync()
+                .whereType<Directory>()
+                .toList()
+              ..sort((a, b) => b.path.compareTo(a.path));
+            for (final subDir in versionDirs) {
+              final nestedExe = File('${subDir.path}\\$exeName');
+              if (nestedExe.existsSync()) {
+                return nestedExe.path;
+              }
+            }
+          }
+        } catch (_) {
+          // Fall back to SDK or PATH if directory traversal is restricted.
+        }
+      }
+
+      if (baseName == 'adb') {
+        final sdkAdb = File(
+          '$localAppData\\Android\\Sdk\\platform-tools\\adb.exe',
+        );
+        if (sdkAdb.existsSync()) {
+          return sdkAdb.path;
+        }
+      }
+    }
+
+    return exeName;
   }
 
   /// Executes an ADB command with the given argument list.
@@ -123,32 +183,62 @@ class AdbService {
     return ['-s', device.serial];
   }
 
-  /// Fetches battery percentage and operating state for the specified [device].
+  /// Fetches battery percentage, manufacturer brand, and Android SDK version
+  /// for the specified [device].
   Future<DeviceInfo> enrichDeviceTelemetry(DeviceInfo device) async {
     final target = getDeviceTargetFlags(device);
-    final result = await execute([...target, 'shell', 'dumpsys', 'battery']);
+    final results = await Future.wait([
+      execute([...target, 'shell', 'dumpsys', 'battery']),
+      execute([...target, 'shell', 'getprop', 'ro.product.brand']),
+      execute([...target, 'shell', 'getprop', 'ro.build.version.sdk']),
+      execute([...target, 'shell', 'getprop', 'ro.product.model']),
+    ]);
 
-    if (result.exitCode != 0) {
-      return device;
+    final batteryResult = results[0];
+    int? level = device.batteryLevel;
+    String? status = device.batteryStatus;
+
+    if (batteryResult.exitCode == 0) {
+      final output = batteryResult.stdout as String;
+      for (final line in LineSplitter.split(output)) {
+        final trimmed = line.trim();
+        if (trimmed.startsWith('level:')) {
+          level = int.tryParse(trimmed.substring(6).trim());
+        } else if (trimmed.startsWith('status:')) {
+          final code = int.tryParse(trimmed.substring(7).trim());
+          status = _decodeBatteryStatus(code);
+        }
+      }
     }
 
-    final output = result.stdout as String;
-    int? level;
-    String? status;
+    String? brand = device.brand;
+    if (results[1].exitCode == 0) {
+      final rawBrand = (results[1].stdout as String).trim();
+      if (rawBrand.isNotEmpty) {
+        brand = rawBrand;
+      }
+    }
 
-    for (final line in LineSplitter.split(output)) {
-      final trimmed = line.trim();
-      if (trimmed.startsWith('level:')) {
-        level = int.tryParse(trimmed.substring(6).trim());
-      } else if (trimmed.startsWith('status:')) {
-        final code = int.tryParse(trimmed.substring(7).trim());
-        status = _decodeBatteryStatus(code);
+    int? sdkInt = device.sdkInt;
+    if (results[2].exitCode == 0) {
+      sdkInt = int.tryParse((results[2].stdout as String).trim()) ?? sdkInt;
+    }
+
+    String model = device.model;
+    if (results[3].exitCode == 0) {
+      final propModel = (results[3].stdout as String).trim();
+      if (propModel.isNotEmpty &&
+          (model == 'Android Device' || model.isEmpty)) {
+        model = propModel;
       }
     }
 
     return device.copyWith(
+      model: model,
       batteryLevel: level,
       batteryStatus: status,
+      brand: brand,
+      sdkInt: sdkInt,
     );
   }
 
@@ -168,14 +258,98 @@ class AdbService {
     }
   }
 
-  /// Applies the software brightness workaround on Google Pixel devices.
+  /// Captures the phone's current brightness and adaptive brightness mode,
+  /// switches temporarily to manual mode, and lowers backlight to 0.
   ///
-  /// Lowers physical brightness to 0 to prevent OLED wear without blanking
-  /// the Tensor hardware encoder buffer. Setting [dim] to `false` restores
-  /// normal visibility (brightness 100).
+  /// Used automatically for Google Tensor devices (where `POWER_MODE_OFF`
+  /// blanks the video encoder) or when software dimming is explicitly requested.
+  Future<ScreenBrightnessSnapshot> captureAndDimScreen(DeviceInfo device) async {
+    final target = getDeviceTargetFlags(device);
+    final reads = await Future.wait([
+      execute([...target, 'shell', 'settings', 'get', 'system', 'screen_brightness']),
+      execute([
+        ...target,
+        'shell',
+        'settings',
+        'get',
+        'system',
+        'screen_brightness_mode',
+      ]),
+    ]);
+
+    final parsedBrightness = reads[0].exitCode == 0
+        ? int.tryParse((reads[0].stdout as String).trim())
+        : null;
+    final parsedMode = reads[1].exitCode == 0
+        ? int.tryParse((reads[1].stdout as String).trim())
+        : null;
+
+    final safeBrightness =
+        (parsedBrightness != null && parsedBrightness > 5) ? parsedBrightness : 120;
+
+    if (parsedMode == 1) {
+      await execute([
+        ...target,
+        'shell',
+        'settings',
+        'put',
+        'system',
+        'screen_brightness_mode',
+        '0',
+      ]);
+    }
+
+    await execute([
+      ...target,
+      'shell',
+      'settings',
+      'put',
+      'system',
+      'screen_brightness',
+      '0',
+    ]);
+
+    return ScreenBrightnessSnapshot(
+      brightness: safeBrightness,
+      mode: parsedMode,
+    );
+  }
+
+  /// Restores the phone's exact prior brightness and adaptive brightness mode
+  /// captured by [captureAndDimScreen].
+  Future<void> restoreScreenBrightness(
+    DeviceInfo device,
+    ScreenBrightnessSnapshot? snapshot,
+  ) async {
+    final target = getDeviceTargetFlags(device);
+    final restoredBrightness = (snapshot?.brightness ?? 120).toString();
+    await execute([
+      ...target,
+      'shell',
+      'settings',
+      'put',
+      'system',
+      'screen_brightness',
+      restoredBrightness,
+    ]);
+
+    if (snapshot?.mode != null) {
+      await execute([
+        ...target,
+        'shell',
+        'settings',
+        'put',
+        'system',
+        'screen_brightness_mode',
+        snapshot!.mode.toString(),
+      ]);
+    }
+  }
+
+  /// Applies or clears a simple software brightness override (`0` vs `120`).
   Future<bool> setScreenBrightness(DeviceInfo device, {bool dim = true}) async {
     final target = getDeviceTargetFlags(device);
-    final brightnessValue = dim ? '0' : '100';
+    final brightnessValue = dim ? '0' : '120';
     final result = await execute([
       ...target,
       'shell',

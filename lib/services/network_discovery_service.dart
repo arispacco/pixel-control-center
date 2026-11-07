@@ -72,24 +72,28 @@ class NetworkDiscoveryService {
     }
 
     final targetFlags = adbService.getDeviceTargetFlags(target);
-    final result = await adbService.execute([
-      ...targetFlags,
-      'shell',
-      'ip',
-      'addr',
-      'show',
-      'wlan0',
-    ]);
+    for (final iface in const ['wlan0', 'swlan0', 'wlan1', 'ap0']) {
+      final result = await adbService.execute([
+        ...targetFlags,
+        'shell',
+        'ip',
+        'addr',
+        'show',
+        iface,
+      ]);
 
-    if (result.exitCode == 0) {
-      final output = result.stdout as String;
-      final match = RegExp(r'inet\s+(\d+\.\d+\.\d+\.\d+)/\d+').firstMatch(output);
-      if (match != null) {
-        return match.group(1);
+      if (result.exitCode == 0) {
+        final output = result.stdout as String;
+        final match =
+            RegExp(r'inet\s+(\d+\.\d+\.\d+\.\d+)/\d+').firstMatch(output);
+        if (match != null) {
+          return match.group(1);
+        }
       }
     }
 
-    // Secondary route query fallback.
+    // Secondary route query fallback prioritizing Wi-Fi / hotspot interfaces
+    // over cellular data interfaces (rmnet / ccmni) on Samsung, Xiaomi, Tecno, etc.
     final routeResult = await adbService.execute([
       ...targetFlags,
       'shell',
@@ -98,9 +102,23 @@ class NetworkDiscoveryService {
     ]);
     if (routeResult.exitCode == 0) {
       final output = routeResult.stdout as String;
-      final match = RegExp(r'src\s+(\d+\.\d+\.\d+\.\d+)').firstMatch(output);
-      if (match != null) {
-        return match.group(1);
+      String? fallbackRouteIp;
+      for (final line in LineSplitter.split(output)) {
+        final match = RegExp(r'src\s+(\d+\.\d+\.\d+\.\d+)').firstMatch(line);
+        if (match == null) continue;
+        final ip = match.group(1)!;
+        final lower = line.toLowerCase();
+        if (lower.contains('wlan') ||
+            lower.contains('swlan') ||
+            lower.contains('ap')) {
+          return ip;
+        }
+        if (!lower.contains('rmnet') && !lower.contains('ccmni')) {
+          fallbackRouteIp ??= ip;
+        }
+      }
+      if (fallbackRouteIp != null) {
+        return fallbackRouteIp;
       }
     }
 
