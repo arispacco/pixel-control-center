@@ -174,6 +174,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  Future<void> _startCastOnly() async {
+    DeviceInfo? targetDev = _selectedDevice;
+    if (targetDev == null && _devices.isNotEmpty) {
+      targetDev = _devices.firstWhere((d) => d.isUsb, orElse: () => _devices.first);
+    }
+
+    if (targetDev == null) {
+      _addLog('[INFO] Aucun appareil détecté pour caster. Recherche automatique...');
+      await _autoConnectWifi();
+      return;
+    }
+
+    _addLog('[ACTION] Lancement du Mode Cast (Projection seule sans contrôle PC) pour ${targetDev.serial}...');
+    final ok = await _scrcpyService.startMirroring(
+      device: targetDev,
+      options: const ScrcpyOptions(
+        noControl: true,
+        useBrightnessWorkaround: false,
+        stayAwake: true,
+        showTouches: true,
+      ),
+    );
+
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Impossible de lancer le mode projection / cast.')),
+      );
+    }
+  }
+
   Future<void> _autoConnectWifi() async {
     _addLog('[DISCOVERY] Lancement de la découverte dynamique d\'adresse IP...');
     setState(() {
@@ -276,6 +306,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               onStartUsb: _startUsbMirroring,
               onStartWifi: _startWifiMirroring,
               onStartScreenOff: _startScreenOffMirroring,
+              onStartCast: _startCastOnly,
               onAutoConnectWifi: _autoConnectWifi,
               onStopMirroring: () => _scrcpyService.stopMirroring(),
             ),

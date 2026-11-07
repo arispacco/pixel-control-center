@@ -21,6 +21,9 @@ class QuickActionsPanel extends StatelessWidget {
   /// Callback to start mirroring with physical screen dimming active.
   final VoidCallback onStartScreenOff;
 
+  /// Callback to start presentation / cast-only mode (mirroring without PC controls).
+  final VoidCallback onStartCast;
+
   /// Callback to initiate multi-tier dynamic IP discovery and connection.
   final VoidCallback onAutoConnectWifi;
 
@@ -35,6 +38,7 @@ class QuickActionsPanel extends StatelessWidget {
     required this.onStartUsb,
     required this.onStartWifi,
     required this.onStartScreenOff,
+    required this.onStartCast,
     required this.onAutoConnectWifi,
     required this.onStopMirroring,
   });
@@ -74,6 +78,15 @@ class QuickActionsPanel extends StatelessWidget {
                   label: const Text('Afficher Écran (Wi-Fi)'),
                   style: FilledButton.styleFrom(
                     backgroundColor: AppTheme.wifiColor,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+                FilledButton.icon(
+                  onPressed: isMirroring ? null : onStartCast,
+                  icon: const Icon(Icons.cast_connected),
+                  label: const Text('Caster l\'Écran (Sans Contrôle PC)'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Colors.teal.shade700,
                     foregroundColor: Colors.white,
                   ),
                 ),
