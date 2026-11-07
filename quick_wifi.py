@@ -5,15 +5,36 @@ Optimisé avec --display-id=0 pour cibler systématiquement l'écran principal
 
 import os
 import sys
+import glob
+import shutil
 import subprocess
 import re
 import socket
 import concurrent.futures
 import time
 
-SCRCPY_DIR = r"C:\Users\pacco\AppData\Local\Microsoft\WinGet\Packages\Genymobile.scrcpy_Microsoft.Winget.Source_8wekyb3d8bbwe\scrcpy-win64-v5.0.1"
-SCRCPY_EXE = os.path.join(SCRCPY_DIR, "scrcpy.exe")
-ADB_EXE = os.path.join(SCRCPY_DIR, "adb.exe")
+
+def _locate_scrcpy_dir():
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if local_app_data:
+        pattern = os.path.join(
+            local_app_data,
+            "Microsoft",
+            "WinGet",
+            "Packages",
+            "Genymobile.scrcpy*",
+            "scrcpy-*",
+        )
+        for folder in sorted(glob.glob(pattern), reverse=True):
+            if os.path.isfile(os.path.join(folder, "scrcpy.exe")):
+                return folder
+    found = shutil.which("scrcpy")
+    return os.path.dirname(os.path.abspath(found)) if found else None
+
+
+SCRCPY_DIR = _locate_scrcpy_dir()
+SCRCPY_EXE = os.path.join(SCRCPY_DIR, "scrcpy.exe") if SCRCPY_DIR and os.name == "nt" else "scrcpy"
+ADB_EXE = os.path.join(SCRCPY_DIR, "adb.exe") if SCRCPY_DIR and os.name == "nt" else "adb"
 
 
 def run_adb(args):
@@ -134,7 +155,7 @@ def main():
             "--keyboard=uhid"
         ]
 
-    subprocess.Popen(cmd, cwd=SCRCPY_DIR)
+    subprocess.Popen(cmd, cwd=SCRCPY_DIR if SCRCPY_DIR and os.path.isdir(SCRCPY_DIR) else None)
 
 
 if __name__ == "__main__":

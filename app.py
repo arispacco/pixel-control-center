@@ -16,13 +16,35 @@ import tkinter as tk
 from tkinter import messagebox
 import customtkinter as ctk
 
+import glob
+import shutil
+
 # Configuration de l'apparence
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
-SCRCPY_DIR = r"C:\Users\pacco\AppData\Local\Microsoft\WinGet\Packages\Genymobile.scrcpy_Microsoft.Winget.Source_8wekyb3d8bbwe\scrcpy-win64-v5.0.1"
-SCRCPY_EXE = os.path.join(SCRCPY_DIR, "scrcpy.exe")
-ADB_EXE = os.path.join(SCRCPY_DIR, "adb.exe")
+
+def _locate_scrcpy_dir():
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if local_app_data:
+        pattern = os.path.join(
+            local_app_data,
+            "Microsoft",
+            "WinGet",
+            "Packages",
+            "Genymobile.scrcpy*",
+            "scrcpy-*",
+        )
+        for folder in sorted(glob.glob(pattern), reverse=True):
+            if os.path.isfile(os.path.join(folder, "scrcpy.exe")):
+                return folder
+    found = shutil.which("scrcpy")
+    return os.path.dirname(os.path.abspath(found)) if found else ""
+
+
+SCRCPY_DIR = _locate_scrcpy_dir()
+SCRCPY_EXE = os.path.join(SCRCPY_DIR, "scrcpy.exe") if SCRCPY_DIR and os.name == "nt" else "scrcpy"
+ADB_EXE = os.path.join(SCRCPY_DIR, "adb.exe") if SCRCPY_DIR and os.name == "nt" else "adb"
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
 if not os.path.exists(SCRCPY_EXE):
