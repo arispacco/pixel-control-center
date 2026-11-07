@@ -7,10 +7,12 @@ import '../../models/scrcpy_options.dart';
 import '../../services/adb_service.dart';
 import '../../services/network_discovery_service.dart';
 import '../../services/scrcpy_service.dart';
+import '../../services/wifi_cast_service.dart';
 import '../widgets/device_status_card.dart';
 import '../widgets/log_console.dart';
 import '../widgets/media_controls_panel.dart';
 import '../widgets/quick_actions_panel.dart';
+import 'wifi_cast_screen.dart';
 
 /// Main desktop screen providing full device supervision, screen mirroring
 /// triggers, remote control buttons, and real-time execution logs.
@@ -26,9 +28,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   late final AdbService _adbService;
   late final ScrcpyService _scrcpyService;
   late final NetworkDiscoveryService _discoveryService;
+  late final WifiCastService _wifiCastService;
 
   StreamSubscription<String>? _logSubscription;
+  StreamSubscription<String>? _castLogSubscription;
   final List<String> _logs = [];
+  bool _isCastScreenOpen = false;
 
   List<DeviceInfo> _devices = [];
   DeviceInfo? _selectedDevice;
@@ -40,6 +45,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _adbService = AdbService();
     _scrcpyService = ScrcpyService(adbService: _adbService);
     _discoveryService = NetworkDiscoveryService(adbService: _adbService);
+    _wifiCastService = WifiCastService();
 
     _logSubscription = _scrcpyService.logStream.listen((logLine) {
       if (!mounted) return;
@@ -48,13 +54,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
       });
     });
 
+    _castLogSubscription = _wifiCastService.logStream.listen((logLine) {
+      if (!mounted) return;
+      setState(() {
+        _logs.add(logLine);
+      });
+    });
+
+    _wifiCastService.connectedPeerNotifier.addListener(_onIncomingWifiCast);
+    unawaited(_wifiCastService.startReceiver());
+
     _refreshDevices();
+  }
+
+  void _onIncomingWifiCast() {
+    final peer = _wifiCastService.connectedPeerNotifier.value;
+    if (peer != null && !_isCastScreenOpen && mounted) {
+      unawaited(_startCastOnly());
+    }
   }
 
   @override
   void dispose() {
+    _wifiCastService.connectedPeerNotifier.removeListener(_onIncomingWifiCast);
     _logSubscription?.cancel();
+    _castLogSubscription?.cancel();
     _scrcpyService.dispose();
+    unawaited(_wifiCastService.dispose());
     super.dispose();
   }
 
@@ -175,32 +201,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _startCastOnly() async {
-    DeviceInfo? targetDev = _selectedDevice;
-    if (targetDev == null && _devices.isNotEmpty) {
-      targetDev = _devices.firstWhere((d) => d.isUsb, orElse: () => _devices.first);
-    }
-
-    if (targetDev == null) {
-      _addLog('[INFO] Aucun appareil détecté pour caster. Recherche automatique...');
-      await _autoConnectWifi();
-      return;
-    }
-
-    _addLog('[ACTION] Lancement du Mode Cast (Projection seule sans contrôle PC) pour ${targetDev.serial}...');
-    final ok = await _scrcpyService.startMirroring(
-      device: targetDev,
-      options: const ScrcpyOptions(
-        noControl: true,
-        useBrightnessWorkaround: false,
-        stayAwake: true,
-        showTouches: true,
-      ),
+    if (_isCastScreenOpen || !mounted) return;
+    _isCastScreenOpen = true;
+    _addLog(
+      '[CAST] Ouverture du récepteur Cast Wi-Fi Direct (sans mode débogage ni ADB)...',
     );
-
-    if (!ok && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Impossible de lancer le mode projection / cast.')),
+    try {
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => WifiCastScreen(castService: _wifiCastService),
+        ),
       );
+    } finally {
+      _isCastScreenOpen = false;
     }
   }
 

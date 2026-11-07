@@ -21,7 +21,7 @@ class QuickActionsPanel extends StatelessWidget {
   /// Callback to start mirroring with physical screen dimming active.
   final VoidCallback onStartScreenOff;
 
-  /// Callback to start presentation / cast-only mode (mirroring without PC controls).
+  /// Callback to open the zero-ADB live Wi-Fi Cast receiver screen.
   final VoidCallback onStartCast;
 
   /// Callback to initiate multi-tier dynamic IP discovery and connection.
@@ -51,8 +51,50 @@ class QuickActionsPanel extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.cast_connected,
+                  size: 18,
+                  color: AppTheme.secondary,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Diffusion Simple en Direct (Grand Public — Sans Mode Débogage)',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.secondary,
+                      ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Affiche uniquement l\'image du téléphone en direct par Wi-Fi sans activer les Options développeur ni ADB. Le tactile du téléphone reste libre.',
+              style: TextStyle(fontSize: 12, color: Colors.white70),
+            ),
+            const SizedBox(height: 10),
+            FilledButton.icon(
+              onPressed: onStartCast,
+              icon: const Icon(Icons.wifi_tethering),
+              label: const Text(
+                'Ouvrir le Récepteur Cast Wi-Fi Direct (Sans Débogage)',
+              ),
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.teal.shade700,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 14,
+                ),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 14),
+              child: Divider(height: 1),
+            ),
             Text(
-              'Actions Rapides',
+              'Contrôle Complet depuis le PC (Mode Débogage ADB — Écran Cassé / Avancé)',
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
                     fontWeight: FontWeight.bold,
                     color: AppTheme.primary,
@@ -66,7 +108,7 @@ class QuickActionsPanel extends StatelessWidget {
                 FilledButton.icon(
                   onPressed: isMirroring ? null : onStartUsb,
                   icon: const Icon(Icons.usb),
-                  label: const Text('Afficher Écran (USB)'),
+                  label: const Text('Contrôler par Câble (USB ADB)'),
                   style: FilledButton.styleFrom(
                     backgroundColor: AppTheme.usbColor,
                     foregroundColor: Colors.white,
@@ -75,25 +117,16 @@ class QuickActionsPanel extends StatelessWidget {
                 FilledButton.icon(
                   onPressed: isMirroring ? null : onStartWifi,
                   icon: const Icon(Icons.wifi),
-                  label: const Text('Afficher Écran (Wi-Fi)'),
+                  label: const Text('Contrôler sans Fil (Wi-Fi ADB)'),
                   style: FilledButton.styleFrom(
                     backgroundColor: AppTheme.wifiColor,
-                    foregroundColor: Colors.white,
-                  ),
-                ),
-                FilledButton.icon(
-                  onPressed: isMirroring ? null : onStartCast,
-                  icon: const Icon(Icons.cast_connected),
-                  label: const Text('Caster l\'Écran (Sans Contrôle PC)'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: Colors.teal.shade700,
                     foregroundColor: Colors.white,
                   ),
                 ),
                 OutlinedButton.icon(
                   onPressed: isMirroring ? null : onStartScreenOff,
                   icon: const Icon(Icons.brightness_low),
-                  label: const Text('Mode Écran Éteint'),
+                  label: const Text('Mode Écran Éteint (OLED)'),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppTheme.secondary,
                     side: const BorderSide(color: AppTheme.secondary),
@@ -102,7 +135,7 @@ class QuickActionsPanel extends StatelessWidget {
                 OutlinedButton.icon(
                   onPressed: onAutoConnectWifi,
                   icon: const Icon(Icons.autorenew),
-                  label: const Text('Détection & Auto-Connexion Wi-Fi'),
+                  label: const Text('Détection Auto ADB Wi-Fi'),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppTheme.primary,
                   ),
