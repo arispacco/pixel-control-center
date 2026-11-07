@@ -72,13 +72,13 @@ class MainActivity : Activity() {
         }
 
         val title = TextView(this).apply {
-            text = "Pixel Wi-Fi Cast"
+            text = "Android Wi-Fi Cast"
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f)
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(Color.parseColor("#0F172A"))
         }
         val subtitle = TextView(this).apply {
-            text = "Partagez votre écran en direct par Wi-Fi sans câble ni mode débogage. Le tactile de votre téléphone reste 100 % actif."
+            text = "Compatible avec tous les téléphones Android (Samsung, Xiaomi, Tecno, Infinix, Oppo, Pixel…). Partagez votre écran en direct par Wi-Fi sans câble ni mode débogage."
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             setTextColor(Color.parseColor("#475569"))
             setPadding(0, dp(6), 0, dp(16))
@@ -235,13 +235,14 @@ class MainActivity : Activity() {
     }
 
     private fun refreshStreamingUi() {
+        val deviceLabel = "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}".trim()
         if (ScreenCastService.isStreaming) {
-            statusBadgeView.text = "● EN DIRECT — ${ScreenCastService.statusMessage}"
+            statusBadgeView.text = "● EN DIRECT ($deviceLabel) — ${ScreenCastService.statusMessage}"
             statusBadgeView.background = roundedBg("#DCFCE7", 12)
             statusBadgeView.setTextColor(Color.parseColor("#166534"))
             stopButton.visibility = View.VISIBLE
         } else {
-            statusBadgeView.text = "Prêt à diffuser • Aucun mode débogage requis"
+            statusBadgeView.text = "$deviceLabel prêt • Aucun mode débogage requis"
             statusBadgeView.background = roundedBg("#E2E8F0", 12)
             statusBadgeView.setTextColor(Color.parseColor("#334155"))
             stopButton.visibility = View.GONE

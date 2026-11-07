@@ -70,7 +70,7 @@ class QuickActionsPanel extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             const Text(
-              'Affiche uniquement l\'image du téléphone en direct par Wi-Fi sans activer les Options développeur ni ADB. Le tactile du téléphone reste libre.',
+              'Fonctionne sur tous les téléphones Android (Samsung, Xiaomi, Tecno, Infinix, Oppo, Pixel…) sans activer les Options développeur ni ADB. Le tactile du téléphone reste libre.',
               style: TextStyle(fontSize: 12, color: Colors.white70),
             ),
             const SizedBox(height: 10),

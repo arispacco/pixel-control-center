@@ -9,7 +9,7 @@
 
     <application
         android:allowBackup="false"
-        android:label="Pixel Wi-Fi Cast"
+        android:label="Android Wi-Fi Cast"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 

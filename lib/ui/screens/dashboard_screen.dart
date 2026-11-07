@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 
-import '../../models/connection_mode.dart';
 import '../../models/device_info.dart';
 import '../../models/scrcpy_options.dart';
 import '../../services/adb_service.dart';
@@ -128,21 +127,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _startUsbMirroring() async {
-    final usbDev = _devices.firstWhere(
-      (d) => d.isUsb,
-      orElse: () => _selectedDevice ?? const DeviceInfo(
-        serial: 'usb',
-        model: 'Pixel 7 Pro',
-        connectionMode: ConnectionMode.usb,
-      ),
-    );
+    if (_devices.where((d) => d.isUsb).isEmpty) {
+      await _refreshDevices();
+    }
 
-    _addLog('[ACTION] Lancement de l\'affichage USB pour ${usbDev.serial}...');
+    final usbDev = _devices.where((d) => d.isUsb).firstOrNull;
+    if (usbDev == null) {
+      _addLog(
+        '[WARN] Aucun téléphone Android détecté en USB. Activez le débogage USB ou utilisez le Cast Wi-Fi Direct (sans débogage).',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Aucun téléphone Android détecté en USB. Vérifiez le câble / débogage USB ou utilisez le Cast Wi-Fi Direct.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
+    _addLog(
+      '[ACTION] Lancement du contrôle USB pour ${usbDev.displayName} (${usbDev.serial})...',
+    );
     final ok = await _scrcpyService.startMirroring(
       device: usbDev,
       options: const ScrcpyOptions(
         stayAwake: true,
-        useBrightnessWorkaround: true,
       ),
     );
 
@@ -154,12 +166,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _startWifiMirroring() async {
-    DeviceInfo? wifiDev;
-    try {
-      wifiDev = _devices.firstWhere((d) => d.isWifi);
-    } catch (_) {
-      wifiDev = null;
-    }
+    final wifiDev = _devices.where((d) => d.isWifi).firstOrNull;
 
     if (wifiDev == null) {
       _addLog('[INFO] Aucun endpoint Wi-Fi actif, tentative d\'auto-détection...');
@@ -167,12 +174,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
 
-    _addLog('[ACTION] Lancement de l\'affichage Wi-Fi pour ${wifiDev.serial}...');
+    _addLog(
+      '[ACTION] Lancement du contrôle Wi-Fi pour ${wifiDev.displayName} (${wifiDev.serial})...',
+    );
     final ok = await _scrcpyService.startMirroring(
       device: wifiDev,
       options: const ScrcpyOptions(
         stayAwake: true,
-        useBrightnessWorkaround: true,
       ),
     );
 
@@ -187,15 +195,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final dev = _selectedDevice;
     if (dev == null) {
       _addLog('[WARN] Veuillez connecter un appareil avant de lancer le mode écran éteint.');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Connectez d\'abord votre téléphone Android en USB ou Wi-Fi ADB.'),
+          ),
+        );
+      }
       return;
     }
 
-    _addLog('[ACTION] Lancement en mode écran éteint (Tensor OLED Workaround)...');
+    _addLog(
+      '[ACTION] Lancement en mode écran éteint pour ${dev.displayName}...',
+    );
     await _scrcpyService.startMirroring(
       device: dev,
       options: const ScrcpyOptions(
         stayAwake: true,
-        useBrightnessWorkaround: true,
+        turnScreenOff: true,
       ),
     );
   }
@@ -296,7 +313,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 borderRadius: BorderRadius.circular(8),
               ),
               child: const Text(
-                'v1.0.0',
+                'Universal Android • v1.1.0',
                 style: TextStyle(fontSize: 11, color: Colors.white70),
               ),
             ),

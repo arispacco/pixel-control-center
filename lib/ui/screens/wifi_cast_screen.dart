@@ -338,15 +338,16 @@ class _WifiCastScreenState extends State<WifiCastScreen> {
                       const SizedBox(height: 16),
                       const _SimpleStepTile(
                         number: '1',
-                        title: 'Aucun mode développeur ni câble nécessaire',
+                        title:
+                            'Universel (Samsung, Xiaomi, Tecno, Infinix, Oppo, Pixel…) — Sans Mode Débogage',
                         subtitle:
-                            'Connectez votre téléphone et ce PC au même Wi-Fi (ou activez simplement le Partage de connexion du téléphone : 0 Mo d\'internet consommé).',
+                            'Connectez n\'importe quel téléphone Android (8.0+) et ce PC au même Wi-Fi, ou activez simplement le Partage de connexion du téléphone (0 Mo d\'internet consommé).',
                       ),
                       const SizedBox(height: 12),
                       _SimpleStepTile(
                         number: '2',
                         title:
-                            'Ouvrez « Pixel Wi-Fi Cast » sur le téléphone et appuyez sur Caster',
+                            'Ouvrez « Android Wi-Fi Cast » sur le téléphone et appuyez sur Caster',
                         subtitle:
                             'Cet ordinateur ($hostName) apparaît automatiquement sur votre téléphone. Acceptez la fenêtre standard Android « Commencer la diffusion » : l\'image s\'affiche aussitôt ici et le tactile de votre téléphone reste 100 % libre.',
                       ),
@@ -370,7 +371,7 @@ class _WifiCastScreenState extends State<WifiCastScreen> {
                       ),
                       const SizedBox(height: 6),
                       const Text(
-                        'Si votre téléphone affiche une adresse locale (ex: http://192.168.43.1:8080 via Pixel Wi-Fi Cast ou ScreenStream), entrez-la ici pour afficher l\'image immédiatement :',
+                        'Si votre téléphone affiche une adresse locale (ex: http://192.168.43.1:8080 via Android Wi-Fi Cast ou ScreenStream), entrez-la ici pour afficher l\'image immédiatement :',
                         style: TextStyle(color: Colors.white70, fontSize: 13),
                       ),
                       const SizedBox(height: 12),

@@ -50,7 +50,7 @@ class DeviceStatusCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    device?.model ?? 'Aucun appareil détecté',
+                    device?.displayName ?? 'Aucun appareil ADB détecté',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                           fontWeight: FontWeight.bold,
                         ),
@@ -58,8 +58,8 @@ class DeviceStatusCard extends StatelessWidget {
                   const SizedBox(height: 4),
                   Text(
                     device != null
-                        ? 'S/N: ${device!.serial}'
-                        : 'Connectez votre Pixel par USB ou activez le Wi-Fi',
+                        ? 'S/N: ${device!.serial}${device!.sdkInt != null ? ' • API ${device!.sdkInt}' : ''}'
+                        : 'Compatible tous smartphones Android (Samsung, Xiaomi, Tecno, Infinix, Pixel…) par Wi-Fi ou USB',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: Colors.white70,
                         ),

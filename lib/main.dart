@@ -17,7 +17,7 @@ class PixelControlCenterApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Pixel Control Center',
+      title: 'Pixel Control Center — Universal Android Edition',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.darkTheme,
       home: const DashboardScreen(),

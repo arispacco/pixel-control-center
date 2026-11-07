@@ -138,7 +138,7 @@ class ScreenCastService : Service() {
         }
 
         val notification = builder
-            .setContentTitle("Pixel Wi-Fi Cast en direct")
+            .setContentTitle("Android Wi-Fi Cast en direct")
             .setContentText("Diffusion de l'écran par Wi-Fi active (sans mode débogage)")
             .setSmallIcon(android.R.drawable.ic_menu_share)
             .addAction(
@@ -414,7 +414,7 @@ class ScreenCastService : Service() {
                     <head>
                       <meta charset="utf-8"/>
                       <meta name="viewport" content="width=device-width,initial-scale=1"/>
-                      <title>Pixel Wi-Fi Cast — En Direct</title>
+                      <title>Android Wi-Fi Cast — En Direct</title>
                       <style>
                         body { margin:0; background:#111315; color:#fff; font-family:system-ui,sans-serif; display:flex; flex-direction:column; height:100vh; }
                         header { padding:10px 18px; background:#1e2126; display:flex; justify-content:space-between; align-items:center; }
@@ -426,7 +426,7 @@ class ScreenCastService : Service() {
                     </head>
                     <body>
                       <header>
-                        <span class="badge">● Pixel Wi-Fi Cast — Diffusion en direct (Sans Mode Débogage)</span>
+                        <span class="badge">● Android Wi-Fi Cast — Diffusion en direct (Sans Mode Débogage)</span>
                         <button onclick="document.documentElement.requestFullscreen()">Plein Écran</button>
                       </header>
                       <main><img src="/stream" alt="Écran en direct"/></main>
