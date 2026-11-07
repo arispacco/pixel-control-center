@@ -33,6 +33,13 @@ class ScrcpyOptions {
   /// Whether physical hardware keyboard events are synthesized via Linux UHID.
   final bool uhidKeyboard;
 
+  /// Whether to disable computer input controls (mouse, keyboard, touch events).
+  ///
+  /// In cast/presentation mode (`--no-control`), the phone screen is simply
+  /// projected to the PC monitor without intercepting input, leaving the physical
+  /// device's touchscreen fully functional for normal use.
+  final bool noControl;
+
   /// Target physical display identifier on Android (defaulting to 0).
   ///
   /// Explicitly specifying 0 prevents scrcpy from attaching to phantom or
@@ -50,6 +57,7 @@ class ScrcpyOptions {
     this.audioEnabled = true,
     this.showTouches = false,
     this.uhidKeyboard = true,
+    this.noControl = false,
     this.displayId = 0,
   });
 
@@ -86,7 +94,9 @@ class ScrcpyOptions {
     if (stayAwake) {
       args.add('--stay-awake');
     }
-    if (uhidKeyboard) {
+    if (noControl) {
+      args.add('--no-control');
+    } else if (uhidKeyboard) {
       args.add('--keyboard=uhid');
     }
     if (showTouches) {
@@ -109,6 +119,7 @@ class ScrcpyOptions {
     bool? audioEnabled,
     bool? showTouches,
     bool? uhidKeyboard,
+    bool? noControl,
     int? displayId,
   }) {
     return ScrcpyOptions(
@@ -121,6 +132,7 @@ class ScrcpyOptions {
       audioEnabled: audioEnabled ?? this.audioEnabled,
       showTouches: showTouches ?? this.showTouches,
       uhidKeyboard: uhidKeyboard ?? this.uhidKeyboard,
+      noControl: noControl ?? this.noControl,
       displayId: displayId ?? this.displayId,
     );
   }

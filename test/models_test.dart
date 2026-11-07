@@ -67,5 +67,18 @@ void main() {
       expect(args, contains('--no-audio'));
       expect(args, isNot(contains('-d')));
     });
+
+    test('generates --no-control flag and suppresses uhid keyboard in cast-only mode', () {
+      const dev = DeviceInfo(
+        serial: '28301FDH300557',
+        model: 'Pixel 7 Pro',
+        connectionMode: ConnectionMode.usb,
+      );
+      const options = ScrcpyOptions(noControl: true);
+      final args = options.toArguments(device: dev);
+
+      expect(args, contains('--no-control'));
+      expect(args, isNot(contains('--keyboard=uhid')));
+    });
   });
 }
