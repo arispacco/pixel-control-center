@@ -11,6 +11,7 @@ import time
 import json
 import re
 import socket
+import queue
 import concurrent.futures
 import tkinter as tk
 from tkinter import messagebox
@@ -61,6 +62,10 @@ class PixelControlApp(ctk.CTk):
         self.geometry("860x830")
         self.minsize(760, 750)
 
+        # File d'attente thread-safe pour les mises à jour UI (Python 3.14 compatible)
+        self._ui_queue = queue.Queue()
+        self._poll_ui_queue()
+
         # Processus scrcpy actif
         self.scrcpy_proc = None
         self.auto_reconnect_active = False
@@ -82,6 +87,23 @@ class PixelControlApp(ctk.CTk):
         # Lancer immédiatement la détection des appareils et de l'IP Wi-Fi
         self.refresh_devices_async()
 
+    def run_on_ui(self, fn):
+        """Exécute de manière sûre un appel UI sur le thread principal Tkinter."""
+        self._ui_queue.put(fn)
+
+    def _poll_ui_queue(self):
+        """Draine périodiquement la file d'attente sur le thread principal."""
+        try:
+            while not self._ui_queue.empty():
+                fn = self._ui_queue.get_nowait()
+                fn()
+        except Exception:
+            pass
+        try:
+            self.after(30, self._poll_ui_queue)
+        except Exception:
+            pass
+
     def _on_close_app(self):
         try:
             self.cast_service.stop()
@@ -97,10 +119,7 @@ class PixelControlApp(ctk.CTk):
             if self.cast_window and self.cast_window.winfo_exists():
                 self.cast_window.update_status_banner(text)
 
-        try:
-            self.after(0, apply_status)
-        except Exception:
-            pass
+        self.run_on_ui(apply_status)
 
     def _on_cast_frame_from_thread(self, jpeg_bytes, width, height, source_label):
         def ensure_and_push():
@@ -109,10 +128,7 @@ class PixelControlApp(ctk.CTk):
             if self.cast_window and self.cast_window.winfo_exists():
                 self.cast_window.push_jpeg_frame(jpeg_bytes, width, height, source_label)
 
-        try:
-            self.after(0, ensure_and_push)
-        except Exception:
-            pass
+        self.run_on_ui(ensure_and_push)
 
     def open_wifi_cast_window(self):
         current_ip = self.entry_ip.get().strip() if hasattr(self, "entry_ip") else ""
@@ -189,10 +205,16 @@ class PixelControlApp(ctk.CTk):
         return []
 
     def update_ip_entry(self, ip):
+        if not ip:
+            return
         self.entry_ip.delete(0, "end")
         self.entry_ip.insert(0, ip)
         self.config["last_ip"] = ip
         self.save_config()
+        if hasattr(self, "cast_service") and self.cast_service:
+            self.cast_service.set_watched_phone_ips([ip])
+        if hasattr(self, "cast_window") and self.cast_window and self.cast_window.winfo_exists():
+            self.cast_window.set_phone_ip(ip)
 
     def create_widgets(self):
         # Header
@@ -539,26 +561,24 @@ class PixelControlApp(ctk.CTk):
         def run_install():
             target = self.get_target()
             if not target:
-                self.after(
-                    0,
+                self.run_on_ui(
                     lambda: messagebox.showinfo(
                         "Téléphone non détecté en ADB",
                         f"Branchez le téléphone en USB ou copiez l'APK :\n{apk_path}",
-                    ),
+                    )
                 )
                 return
             out = self.run_adb(target + ["install", "-r", apk_path], timeout=30)
             ok = "success" in out.lower()
-            self.after(
-                0,
+            self.run_on_ui(
                 lambda: messagebox.showinfo(
                     "Installation terminée" if ok else "Résultat installation",
                     "Android Wi-Fi Cast est installé sur votre téléphone !"
                     if ok
                     else f"Sortie ADB :\n{out}",
-                ),
+                )
             )
-            self.after(0, lambda: self.info_label.configure(text="Android Wi-Fi Cast installé !"))
+            self.run_on_ui(lambda: self.info_label.configure(text="Android Wi-Fi Cast installé !"))
 
         threading.Thread(target=run_install, daemon=True).start()
 
@@ -862,8 +882,20 @@ class PixelControlApp(ctk.CTk):
                     if r and r[0] != "127.0.0.1":
                         return r
 
+            # Re-read ARP table after the subnet sweep (wakes up sleeping Wi-Fi phones!)
+            refreshed_hosts = [
+                h for h in self._extract_gateway_and_arp_peers(subnet) if h != my_ip
+            ]
+            if hasattr(self, "cast_service") and self.cast_service and refreshed_hosts:
+                self.cast_service.set_watched_phone_ips(refreshed_hosts)
+
+            for h in refreshed_hosts:
+                hit = probe_service(h)
+                if hit:
+                    return hit
+
             # Fallback: return alive ARP / Hotspot Gateway peer so the user sees the phone IP!
-            for h in priority_hosts:
+            for h in refreshed_hosts:
                 try:
                     ping_args = (
                         ["ping", "-n", "1", "-w", "300", h]
@@ -882,6 +914,9 @@ class PixelControlApp(ctk.CTk):
                 except Exception:
                     pass
 
+            if refreshed_hosts:
+                return refreshed_hosts[0], None
+
         return None, None
 
     def trigger_ip_scan_async(self):
@@ -898,8 +933,14 @@ class PixelControlApp(ctk.CTk):
                 self.btn_auto_ip.configure(text="🔍 Détecter", state="normal")
                 if ip and port == "8080":
                     self.update_ip_entry(ip)
+                    self.status_badge.configure(
+                        text=f"● Cast Wi-Fi actif ({ip}:8080)", text_color="#34d399"
+                    )
+                    self.lbl_device_info.configure(
+                        text=f"Appareil sur le Wi-Fi : {ip} (Flux Cast Wi-Fi en direct détecté sur :8080)"
+                    )
                     self.info_label.configure(
-                        text=f"Flux Cast Wi-Fi détecté sur http://{ip}:8080 !"
+                        text=f"✅ Flux Cast Wi-Fi détecté sur http://{ip}:8080 !"
                     )
                 elif ip and port:
                     self.update_ip_entry(ip)
@@ -907,31 +948,35 @@ class PixelControlApp(ctk.CTk):
                     self.entry_port.insert(0, port)
                     self.config["last_port"] = port
                     self.save_config()
-                    self.info_label.configure(text=f"Appareil ADB trouvé : {ip}:{port}")
+                    self.info_label.configure(text=f"✅ Appareil ADB trouvé : {ip}:{port}")
                     self.run_adb(["connect", f"{ip}:{port}"])
                     self.refresh_devices_async()
                 elif ip:
                     self.update_ip_entry(ip)
+                    self.status_badge.configure(
+                        text=f"● Téléphone détecté sur Wi-Fi ({ip})", text_color="#38bdf8"
+                    )
+                    self.lbl_device_info.configure(
+                        text=(
+                            f"Appareil détecté sur le Wi-Fi : {ip}\n"
+                            f"Mode Cast sans débogage : Prêt (surveillance auto de {ip}:8080 active)"
+                        )
+                    )
                     self.info_label.configure(
-                        text=f"Téléphone détecté sur {ip} (port ADB fermé : lancez Android Wi-Fi Cast ou branchez 1x en USB)."
+                        text=f"✅ Adresse IP détectée automatiquement : {ip}"
                     )
                 else:
                     self.info_label.configure(text="Aucun appareil détecté sur ce réseau Wi-Fi.")
-            self.after(0, update_ui)
+            self.run_on_ui(update_ui)
 
         threading.Thread(target=task, daemon=True).start()
 
     # ------------------ LOGIC ------------------
     def refresh_devices_async(self):
         self.status_badge.configure(text="● Actualisation...", text_color="#fbbf24")
-        self.info_label.configure(text="Recherche des appareils connectés...")
+        self.info_label.configure(text="Recherche des appareils et de l'adresse IP...")
 
         def task():
-            current_ip = self.entry_ip.get().strip()
-            current_port = self.entry_port.get().strip() or "5555"
-            if current_ip:
-                self.run_adb(["connect", f"{current_ip}:{current_port}"], timeout=3)
-
             usb, wifi = self.get_connected_devices()
             device_names = []
             if usb:
@@ -940,15 +985,14 @@ class PixelControlApp(ctk.CTk):
                 device_names.append(f"Wi-Fi ({wifi[0]})")
 
             discovered_ip = None
-            discovered_port = "5555"
+            det_port = None
             if not wifi:
                 discovered_ip, det_port = self.discover_pixel_ip()
                 if discovered_ip and det_port and det_port != "8080":
-                    discovered_port = det_port
-                    conn_out = self.run_adb(["connect", f"{discovered_ip}:{discovered_port}"], timeout=4)
+                    conn_out = self.run_adb(["connect", f"{discovered_ip}:{det_port}"], timeout=4)
                     if "connected" in conn_out.lower():
-                        wifi.append(f"{discovered_ip}:{discovered_port}")
-                        device_names.append(f"Wi-Fi ({discovered_ip}:{discovered_port})")
+                        wifi.append(f"{discovered_ip}:{det_port}")
+                        device_names.append(f"Wi-Fi ({discovered_ip}:{det_port})")
 
             target = self.get_target()
             level = "Inconnu"
@@ -969,21 +1013,52 @@ class PixelControlApp(ctk.CTk):
             def update_ui():
                 if discovered_ip:
                     self.update_ip_entry(discovered_ip)
+                    if det_port and det_port != "8080":
+                        self.entry_port.delete(0, "end")
+                        self.entry_port.insert(0, det_port)
+                        self.config["last_port"] = det_port
+                        self.save_config()
 
                 if usb and wifi:
                     self.status_badge.configure(text="● Connecté (USB & Wi-Fi)", text_color="#34d399")
+                    txt = f"Appareils : {', '.join(device_names)}\nBatterie : {level}{temp}"
+                    self.info_label.configure(text=f"✅ Connecté : {', '.join(device_names)}")
                 elif usb:
                     self.status_badge.configure(text="● Connecté (Câble USB)", text_color="#60a5fa")
+                    txt = f"Appareils : {', '.join(device_names)}\nBatterie : {level}{temp}"
+                    self.info_label.configure(text=f"✅ Connecté en USB ({usb[0]})")
                 elif wifi:
-                    self.status_badge.configure(text="● Connecté (Sans Fil Wi-Fi)", text_color="#34d399")
+                    self.status_badge.configure(text=f"● Connecté Wi-Fi ({wifi[0]})", text_color="#34d399")
+                    txt = f"Appareils : {', '.join(device_names)}\nBatterie : {level}{temp}"
+                    self.info_label.configure(text=f"✅ Connecté en Wi-Fi ({wifi[0]})")
+                elif discovered_ip and det_port == "8080":
+                    self.status_badge.configure(
+                        text=f"● Cast Wi-Fi actif ({discovered_ip}:8080)", text_color="#34d399"
+                    )
+                    txt = (
+                        f"Appareil détecté sur le Wi-Fi : {discovered_ip}\n"
+                        f"Flux Cast Wi-Fi en direct actif sur http://{discovered_ip}:8080"
+                    )
+                    self.info_label.configure(text=f"✅ Flux Cast Wi-Fi détecté sur {discovered_ip}:8080")
+                elif discovered_ip:
+                    self.status_badge.configure(
+                        text=f"● Téléphone détecté sur Wi-Fi ({discovered_ip})", text_color="#38bdf8"
+                    )
+                    txt = (
+                        f"Appareil détecté sur le Wi-Fi : {discovered_ip}\n"
+                        f"Mode Cast sans débogage : Prêt (écoute auto sur {discovered_ip}:8080)"
+                    )
+                    self.info_label.configure(
+                        text=f"✅ Adresse IP détectée automatiquement : {discovered_ip}"
+                    )
                 else:
                     self.status_badge.configure(text="● Aucun appareil détecté", text_color="#ef4444")
+                    txt = "Appareils : Aucun détecté sur USB ou Wi-Fi"
+                    self.info_label.configure(text="Aucun appareil détecté.")
 
-                txt = f"Appareils : {', '.join(device_names) if device_names else 'Aucun'}\nBatterie : {level}{temp}"
                 self.lbl_device_info.configure(text=txt)
-                self.info_label.configure(text="Appareils actualisés avec succès.")
 
-            self.after(0, update_ui)
+            self.run_on_ui(update_ui)
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -1005,7 +1080,7 @@ class PixelControlApp(ctk.CTk):
                 if not usb:
                     if wifi:
                         target_mode = "wifi"
-                        self.after(0, lambda: self.info_label.configure(text="USB non branché. Bascule automatique en Wi-Fi !"))
+                        self.run_on_ui(lambda: self.info_label.configure(text="USB non branché. Bascule automatique en Wi-Fi !"))
                     else:
                         def notify_no_usb():
                             messagebox.showwarning(
@@ -1015,7 +1090,7 @@ class PixelControlApp(ctk.CTk):
                                 "2. Pour afficher l'écran sans câble ni mode débogage, cliquez sur « Cast Wi-Fi Direct »."
                             )
                             self.info_label.configure(text="Échec : câble USB non branché.")
-                        self.after(0, notify_no_usb)
+                        self.run_on_ui(notify_no_usb)
                         return
 
             # 2. Gestion du mode Wi-Fi
@@ -1025,21 +1100,30 @@ class PixelControlApp(ctk.CTk):
             if target_mode == "wifi":
                 # Vérifier si l'appareil est déjà connecté
                 if not wifi or not any(ip in w for w in wifi):
-                    self.after(0, lambda: self.info_label.configure(text="Connexion Wi-Fi au smartphone..."))
+                    self.run_on_ui(lambda: self.info_label.configure(text="Connexion Wi-Fi au smartphone..."))
                     conn_res = self.run_adb(["connect", f"{ip}:{port}"], timeout=8)
                     if "connected" not in conn_res.lower():
                         new_ip, det_port = self.discover_pixel_ip()
                         if new_ip and det_port == "8080":
-                            self.after(0, lambda: self.update_ip_entry(new_ip))
-                            self.after(0, self.open_wifi_cast_window)
+                            self.run_on_ui(lambda: self.update_ip_entry(new_ip))
+                            self.run_on_ui(self.open_wifi_cast_window)
                             return
                         elif new_ip:
                             ip = new_ip
                             if det_port:
                                 port = det_port
-                            self.after(0, lambda: self.update_ip_entry(new_ip))
+                            self.run_on_ui(lambda: self.update_ip_entry(new_ip))
                             conn_res = self.run_adb(["connect", f"{ip}:{port}"], timeout=8)
                         if "connected" not in conn_res.lower():
+                            if passive_cast:
+                                self.run_on_ui(
+                                    lambda: self.info_label.configure(
+                                        text=f"Bascule automatique vers Cast Wi-Fi Direct ({ip})..."
+                                    )
+                                )
+                                self.run_on_ui(self.open_wifi_cast_window)
+                                return
+
                             def notify_no_wifi():
                                 messagebox.showerror(
                                     "Smartphone introuvable en ADB Wi-Fi",
@@ -1048,7 +1132,7 @@ class PixelControlApp(ctk.CTk):
                                     "• Ou branchez une fois le câble USB pour activer le pont ADB sans fil."
                                 )
                                 self.info_label.configure(text="Smartphone non joignable en ADB Wi-Fi.")
-                            self.after(0, notify_no_wifi)
+                            self.run_on_ui(notify_no_wifi)
                             return
 
             target_adb = ["-d"] if target_mode == "usb" else ["-s", f"{ip}:{port}"]
@@ -1130,7 +1214,7 @@ class PixelControlApp(ctk.CTk):
                                 if err_out.strip():
                                     messagebox.showwarning("Fermeture du miroir", f"L'affichage n'a pas pu démarrer :\n{err_out}")
                                 self.info_label.configure(text="Miroir arrêté.")
-                            self.after(0, show_err)
+                            self.run_on_ui(show_err)
 
                     threading.Thread(target=monitor_crash, args=(self.scrcpy_proc,), daemon=True).start()
 
@@ -1138,7 +1222,7 @@ class PixelControlApp(ctk.CTk):
                     messagebox.showerror("Erreur de lancement", f"Impossible de lancer scrcpy :\n{e}")
                     self.info_label.configure(text="Erreur au lancement.")
 
-            self.after(0, start_gui)
+            self.run_on_ui(start_gui)
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -1207,7 +1291,7 @@ class PixelControlApp(ctk.CTk):
                 self.info_label.configure(text="Capture enregistrée sur le Bureau !")
                 if os.path.exists(out_file):
                     os.startfile(out_file)
-            self.after(0, done)
+            self.run_on_ui(done)
         threading.Thread(target=task, daemon=True).start()
 
 

@@ -1,6 +1,7 @@
 """
 Module de réception Cast Wi-Fi en direct (Zéro ADB / Sans Mode Débogage)
 Compatible avec l'application Android Wi-Fi Cast (TCP PCST :5959, UDP :5958 et HTTP MJPEG :8080).
+Inclut la surveillance automatique du port :8080 du téléphone détecté pour contourner le pare-feu Windows Public.
 """
 
 import io
@@ -9,6 +10,7 @@ import re
 import socket
 import struct
 import threading
+import queue
 import time
 from tkinter import messagebox
 
@@ -51,6 +53,17 @@ class WifiCastReceiverService:
         self._tcp_server = None
         self._http_stop = threading.Event()
         self._http_thread = None
+        self._http_streaming_active = False
+        self._watched_ips = []
+        self._lock = threading.Lock()
+
+    def set_watched_phone_ips(self, ips):
+        clean = []
+        for ip in ips:
+            if ip and ip != "127.0.0.1" and ip not in clean:
+                clean.append(ip.strip())
+        with self._lock:
+            self._watched_ips = clean
 
     def start(self):
         if self.running:
@@ -58,6 +71,7 @@ class WifiCastReceiverService:
         self.running = True
         threading.Thread(target=self._udp_discovery_loop, daemon=True).start()
         threading.Thread(target=self._tcp_accept_loop, daemon=True).start()
+        threading.Thread(target=self._auto_watch_phone_http_loop, daemon=True).start()
 
     def stop(self):
         self.running = False
@@ -73,28 +87,71 @@ class WifiCastReceiverService:
 
     def disconnect_http(self):
         self._http_stop.set()
+        self._http_streaming_active = False
 
     def connect_http_mjpeg(self, host, port=8080):
+        host = host.strip()
+        if not host:
+            return
         self.disconnect_http()
         time.sleep(0.08)
         self._http_stop = threading.Event()
         self._http_thread = threading.Thread(
             target=self._http_mjpeg_loop,
-            args=(host.strip(), int(port)),
+            args=(host, int(port)),
             daemon=True,
         )
         self._http_thread.start()
+
+    def _auto_watch_phone_http_loop(self):
+        """
+        Surveille automatiquement en arrière-plan si le téléphone détecté sur le Wi-Fi / Hotspot
+        démarre son serveur Cast sur le port 8080 (contourne 100 % le pare-feu Windows Public).
+        """
+        while self.running:
+            time.sleep(1.5)
+            if self._http_streaming_active:
+                continue
+            with self._lock:
+                candidates = list(self._watched_ips)
+
+            for ip in candidates:
+                if not self.running or self._http_streaming_active:
+                    break
+                try:
+                    with socket.create_connection((ip, self.HTTP_PORT), timeout=0.28):
+                        self.connect_http_mjpeg(ip, self.HTTP_PORT)
+                        break
+                except Exception:
+                    pass
 
     def _udp_discovery_loop(self):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            except Exception:
+                pass
             sock.bind(("0.0.0.0", self.UDP_PORT))
             sock.settimeout(1.0)
             self._udp_sock = sock
             pc_name = socket.gethostname() or "PC-Windows"
+            announce = f"PIXEL_CAST_HERE|{pc_name}|{self.TCP_PORT}".encode("utf-8")
+            last_punch = 0.0
 
             while self.running:
+                now = time.monotonic()
+                if now - last_punch > 2.5:
+                    last_punch = now
+                    with self._lock:
+                        targets = list(self._watched_ips)
+                    for ip in targets:
+                        try:
+                            sock.sendto(announce, (ip, self.UDP_PORT))
+                        except Exception:
+                            pass
+
                 try:
                     data, addr = sock.recvfrom(512)
                 except socket.timeout:
@@ -104,9 +161,8 @@ class WifiCastReceiverService:
 
                 msg = data.decode("utf-8", errors="ignore").strip()
                 if msg.startswith("PIXEL_CAST_DISCOVER") or msg.startswith("PCC_DISCOVER"):
-                    reply = f"PIXEL_CAST_HERE|{pc_name}|{self.TCP_PORT}".encode("utf-8")
                     try:
-                        sock.sendto(reply, addr)
+                        sock.sendto(announce, addr)
                     except OSError:
                         pass
         except Exception:
@@ -139,6 +195,7 @@ class WifiCastReceiverService:
             self.on_status(f"Port TCP {self.TCP_PORT} occupé ({exc}) • Utilisez le flux Web :8080")
 
     def _handle_tcp_client(self, client, sender_ip):
+        self._http_streaming_active = True
         self.on_status(f"● EN DIRECT (TCP) depuis {sender_ip}")
         try:
             client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -157,6 +214,7 @@ class WifiCastReceiverService:
         except Exception:
             pass
         finally:
+            self._http_streaming_active = False
             try:
                 client.close()
             except Exception:
@@ -172,6 +230,7 @@ class WifiCastReceiverService:
             sock = socket.create_connection((host, port), timeout=3.5)
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             sock.settimeout(6.0)
+            self._http_streaming_active = True
             req = (
                 f"GET /stream HTTP/1.1\r\n"
                 f"Host: {host}:{port}\r\n"
@@ -189,7 +248,6 @@ class WifiCastReceiverService:
                     break
                 buf.extend(chunk)
 
-                # Extract frames via Content-Length when available, or SOI..EOI markers
                 while True:
                     cl_match = re.search(rb"Content-Length:\s*(\d+)\r\n\r\n", buf, re.IGNORECASE)
                     if cl_match:
@@ -217,9 +275,10 @@ class WifiCastReceiverService:
         except Exception as exc:
             if not stop_ev.is_set():
                 self.on_status(
-                    f"Flux Web {host}:{port} non actif ({exc}). Lancez 'Android Wi-Fi Cast' sur le téléphone."
+                    f"Téléphone {host} détecté • Lancez « Android Wi-Fi Cast » sur le mobile pour démarrer l'image ({exc})"
                 )
         finally:
+            self._http_streaming_active = False
             if sock:
                 try:
                     sock.close()
@@ -239,6 +298,10 @@ class WifiCastWindow(ctk.CTkToplevel):
         self.minsize(420, 560)
         self.configure(fg_color="#0b0f19")
 
+        # File d'attente thread-safe pour les mises à jour UI (Python 3.14 compatible)
+        self._ui_queue = queue.Queue()
+        self._poll_ui_queue()
+
         self._is_fullscreen = False
         self._latest_pil = None
         self._latest_jpeg = None
@@ -249,6 +312,32 @@ class WifiCastWindow(ctk.CTkToplevel):
         self.bind("<F11>", lambda _e: self.toggle_fullscreen())
         self.bind("<Escape>", lambda _e: self._exit_fullscreen())
 
+    def run_on_ui(self, fn):
+        """Exécute de manière sûre un appel UI sur le thread principal Tkinter."""
+        self._ui_queue.put(fn)
+
+    def _poll_ui_queue(self):
+        """Draine périodiquement la file d'attente sur le thread principal."""
+        try:
+            while not self._ui_queue.empty():
+                fn = self._ui_queue.get_nowait()
+                fn()
+        except Exception:
+            pass
+        if self.winfo_exists():
+            try:
+                self.after(30, self._poll_ui_queue)
+            except Exception:
+                pass
+
+    def set_phone_ip(self, ip):
+        def apply_ip():
+            if not self.winfo_exists() or not ip:
+                return
+            self.entry_phone_ip.delete(0, "end")
+            self.entry_phone_ip.insert(0, ip)
+        self.run_on_ui(apply_ip)
+
     def _build_ui(self, initial_ip):
         # Top Control Bar
         self.top_bar = ctk.CTkFrame(self, corner_radius=10, fg_color="#111827")
@@ -257,9 +346,10 @@ class WifiCastWindow(ctk.CTkToplevel):
         row1 = ctk.CTkFrame(self.top_bar, fg_color="transparent")
         row1.pack(fill="x", padx=10, pady=(8, 4))
 
+        ip_hint = f" • Téléphone détecté : {initial_ip}" if initial_ip else ""
         self.lbl_live = ctk.CTkLabel(
             row1,
-            text=f"● PC prêt ({get_local_lan_ip()}:5959) — En attente du téléphone...",
+            text=f"● PC prêt ({get_local_lan_ip()}:5959){ip_hint}",
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color="#34d399",
         )
@@ -331,8 +421,8 @@ class WifiCastWindow(ctk.CTkToplevel):
             text=(
                 "📱 Comment afficher votre écran sans mode débogage :\n\n"
                 "1. Ouvrez l'application « Android Wi-Fi Cast » sur votre téléphone\n"
-                "2. Appuyez sur « Caster vers mon PC » ou « Caster sur le Navigateur Web »\n"
-                "3. Acceptez le partage d'écran Android : l'image apparaît ici instantanément !"
+                "2. Appuyez sur « Caster sur le Navigateur Web » (ou « Caster vers mon PC »)\n"
+                "3. Acceptez le partage d'écran Android : l'image apparaît ici automatiquement !"
             ),
             font=ctk.CTkFont(size=14),
             text_color="#94a3b8",
@@ -340,9 +430,9 @@ class WifiCastWindow(ctk.CTkToplevel):
         )
         self.video_label.pack(fill="both", expand=True, padx=8, pady=8)
 
-        # Auto-try connecting if initial_ip already streams on :8080
         if initial_ip:
-            self.after(250, lambda: self._probe_and_connect_quietly(initial_ip))
+            self.service.set_watched_phone_ips([initial_ip])
+            self.after(200, lambda: self._probe_and_connect_quietly(initial_ip))
 
     def _probe_and_connect_quietly(self, ip):
         def check():
@@ -366,14 +456,14 @@ class WifiCastWindow(ctk.CTkToplevel):
                 if not self.winfo_exists():
                     return
                 if ip:
-                    self.entry_phone_ip.delete(0, "end")
-                    self.entry_phone_ip.insert(0, ip)
+                    self.set_phone_ip(ip)
+                    self.service.set_watched_phone_ips([ip])
                     if port == "8080":
                         self.service.connect_http_mjpeg(ip, 8080)
                     else:
                         self.lbl_live.configure(
-                            text=f"Téléphone trouvé ({ip}) • Lancez 'Android Wi-Fi Cast' sur le mobile",
-                            text_color="#60a5fa",
+                            text=f"✅ Téléphone détecté ({ip}) • Ouvrez 'Android Wi-Fi Cast' sur le mobile",
+                            text_color="#38bdf8",
                         )
                         self._probe_and_connect_quietly(ip)
                 else:
@@ -382,7 +472,7 @@ class WifiCastWindow(ctk.CTkToplevel):
                         text_color="#f87171",
                     )
 
-            self.after(0, apply_res)
+            self.run_on_ui(apply_res)
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -397,6 +487,7 @@ class WifiCastWindow(ctk.CTkToplevel):
             port = int(p_str) if p_str.isdigit() else 8080
         else:
             host, port = raw, 8080
+        self.service.set_watched_phone_ips([host])
         self.service.connect_http_mjpeg(host, port)
 
     def toggle_fullscreen(self):
@@ -409,8 +500,7 @@ class WifiCastWindow(ctk.CTkToplevel):
             self.attributes("-fullscreen", False)
 
     def update_status_banner(self, text):
-        if self.winfo_exists():
-            self.lbl_live.configure(text=text)
+        self.run_on_ui(lambda: self.lbl_live.configure(text=text) if self.winfo_exists() else None)
 
     def push_jpeg_frame(self, jpeg_bytes, width, height, source_label):
         try:
@@ -432,7 +522,7 @@ class WifiCastWindow(ctk.CTkToplevel):
             self._render_pending = True
             fps = len(self._frame_times)
             w, h = pil_img.size
-            self.after(0, lambda: self._render_latest(w, h, fps, source_label))
+            self.run_on_ui(lambda: self._render_latest(w, h, fps, source_label))
 
     def _render_latest(self, w, h, fps, source_label):
         self._render_pending = False
