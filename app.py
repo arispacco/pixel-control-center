@@ -516,17 +516,63 @@ class PixelControlApp(ctk.CTk):
         ).pack(anchor="w", padx=12, pady=(0, 10))
 
     # ------------------ DÉTECTION AUTOMATIQUE D'IP ------------------
+    def _extract_gateway_and_arp_peers(self, subnet_prefix):
+        candidates = []
+        if os.name == "nt":
+            try:
+                ipcfg = subprocess.run(
+                    ["ipconfig"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                ).stdout
+                for line in ipcfg.splitlines():
+                    low = line.lower()
+                    if "passerelle" in low or "gateway" in low:
+                        for ip in re.findall(r"(\d+\.\d+\.\d+\.\d+)", line):
+                            if ip.startswith(subnet_prefix + ".") and not ip.endswith(".255"):
+                                if ip not in candidates:
+                                    candidates.append(ip)
+            except Exception:
+                pass
+
+        try:
+            arp_out = subprocess.run(
+                ["arp", "-a"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            ).stdout
+            for line in arp_out.splitlines():
+                m = re.search(r"(\d+\.\d+\.\d+\.\d+)", line)
+                if not m:
+                    continue
+                ip = m.group(1)
+                if ip.startswith(subnet_prefix + ".") and not ip.endswith(".255") and not ip.endswith(".0"):
+                    if ip not in candidates:
+                        candidates.append(ip)
+        except Exception:
+            pass
+
+        return candidates
+
     def discover_pixel_ip(self):
         devices_out = self.run_adb(["devices"])
         for line in devices_out.splitlines():
-            if ":5555" in line and "device" in line:
-                ip = line.split(":")[0].strip()
-                return ip, "5555"
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == "device" and ":" in parts[0]:
+                serial = parts[0]
+                if not serial.startswith("127.0.0.1") and not serial.startswith("emulator-"):
+                    ip, port = serial.split(":", 1)
+                    return ip.strip(), port.strip()
 
         usb_route = self.run_adb(["-d", "shell", "ip", "route"])
         if "src" in usb_route:
             for line in usb_route.splitlines():
-                if "src" in line and ("wlan" in line or "ap_br" in line):
+                low = line.lower()
+                if "src" in low and ("wlan" in low or "swlan" in low or "ap" in low):
                     parts = line.split()
                     try:
                         ip = parts[parts.index("src") + 1]
@@ -536,10 +582,12 @@ class PixelControlApp(ctk.CTk):
                         pass
 
         mdns_out = self.run_adb(["mdns", "services"])
-        m = re.findall(r'(\d+\.\d+\.\d+\.\d+):(\d+)', mdns_out)
-        if m:
-            ip, port = m[0]
-            return ip, "5555"
+        for line in mdns_out.splitlines():
+            if "_adb-tls-pairing._tcp" in line:
+                continue
+            m = re.search(r"(\d+\.\d+\.\d+\.\d+):(\d+)", line)
+            if m and m.group(1) != "127.0.0.1":
+                return m.group(1), m.group(2)
 
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -553,19 +601,53 @@ class PixelControlApp(ctk.CTk):
         parts = my_ip.split(".")
         if len(parts) == 4 and my_ip != "127.0.0.1":
             subnet = ".".join(parts[:3])
+            priority_hosts = [
+                h for h in self._extract_gateway_and_arp_peers(subnet) if h != my_ip
+            ]
 
-            def probe(host):
-                try:
-                    with socket.create_connection((host, 5555), timeout=0.2):
-                        return host
-                except Exception:
-                    return None
+            def probe_service(host):
+                for p in (5555, 8080):
+                    try:
+                        with socket.create_connection((host, p), timeout=0.22):
+                            return host, str(p)
+                    except Exception:
+                        pass
+                return None
 
-            ips = [f"{subnet}.{i}" for i in range(1, 255) if f"{subnet}.{i}" != my_ip]
+            for h in priority_hosts:
+                hit = probe_service(h)
+                if hit:
+                    return hit
+
+            ips = [
+                f"{subnet}.{i}"
+                for i in range(1, 255)
+                if f"{subnet}.{i}" != my_ip and f"{subnet}.{i}" not in priority_hosts
+            ]
             with concurrent.futures.ThreadPoolExecutor(max_workers=60) as ex:
-                for r in ex.map(probe, ips):
-                    if r and r != "127.0.0.1":
-                        return r, "5555"
+                for r in ex.map(probe_service, ips):
+                    if r and r[0] != "127.0.0.1":
+                        return r
+
+            # Fallback: return alive ARP / Hotspot Gateway peer so the user sees the phone IP!
+            for h in priority_hosts:
+                try:
+                    ping_args = (
+                        ["ping", "-n", "1", "-w", "300", h]
+                        if os.name == "nt"
+                        else ["ping", "-c", "1", "-W", "1", h]
+                    )
+                    res = subprocess.run(
+                        ping_args,
+                        capture_output=True,
+                        text=True,
+                        timeout=2,
+                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                    )
+                    if "ttl=" in res.stdout.lower():
+                        return h, None
+                except Exception:
+                    pass
 
         return None, None
 
@@ -574,20 +656,34 @@ class PixelControlApp(ctk.CTk):
             return
         self.is_discovering = True
         self.btn_auto_ip.configure(text="⏳ ...", state="disabled")
-        self.info_label.configure(text="Recherche automatique de l'IP du Pixel...")
+        self.info_label.configure(text="Recherche automatique de l'IP sur le Wi-Fi / Hotspot...")
 
         def task():
             ip, port = self.discover_pixel_ip()
             def update_ui():
                 self.is_discovering = False
                 self.btn_auto_ip.configure(text="🔍 Détecter", state="normal")
-                if ip:
+                if ip and port == "8080":
                     self.update_ip_entry(ip)
-                    self.info_label.configure(text=f"Pixel trouvé : {ip}:{port}")
+                    self.info_label.configure(
+                        text=f"Flux Cast Wi-Fi détecté sur http://{ip}:8080 !"
+                    )
+                elif ip and port:
+                    self.update_ip_entry(ip)
+                    self.entry_port.delete(0, "end")
+                    self.entry_port.insert(0, port)
+                    self.config["last_port"] = port
+                    self.save_config()
+                    self.info_label.configure(text=f"Appareil ADB trouvé : {ip}:{port}")
                     self.run_adb(["connect", f"{ip}:{port}"])
                     self.refresh_devices_async()
+                elif ip:
+                    self.update_ip_entry(ip)
+                    self.info_label.configure(
+                        text=f"Téléphone détecté sur {ip} (port ADB fermé : lancez Android Wi-Fi Cast ou branchez 1x en USB)."
+                    )
                 else:
-                    self.info_label.configure(text="Pixel introuvable en Wi-Fi. Branchez-le une fois en USB.")
+                    self.info_label.configure(text="Aucun appareil détecté sur ce réseau Wi-Fi.")
             self.after(0, update_ui)
 
         threading.Thread(target=task, daemon=True).start()
@@ -611,12 +707,15 @@ class PixelControlApp(ctk.CTk):
                 device_names.append(f"Wi-Fi ({wifi[0]})")
 
             discovered_ip = None
+            discovered_port = "5555"
             if not wifi:
-                discovered_ip, _ = self.discover_pixel_ip()
-                if discovered_ip:
-                    self.run_adb(["connect", f"{discovered_ip}:5555"], timeout=4)
-                    wifi.append(f"{discovered_ip}:5555")
-                    device_names.append(f"Wi-Fi ({discovered_ip}:5555)")
+                discovered_ip, det_port = self.discover_pixel_ip()
+                if discovered_ip and det_port and det_port != "8080":
+                    discovered_port = det_port
+                    conn_out = self.run_adb(["connect", f"{discovered_ip}:{discovered_port}"], timeout=4)
+                    if "connected" in conn_out.lower():
+                        wifi.append(f"{discovered_ip}:{discovered_port}")
+                        device_names.append(f"Wi-Fi ({discovered_ip}:{discovered_port})")
 
             target = self.get_target()
             level = "Inconnu"

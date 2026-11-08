@@ -45,35 +45,38 @@ def run_adb(args):
         return ""
 
 
-def discover_ip():
+def discover_endpoint():
     out = run_adb(["devices"])
     for line in out.splitlines():
         parts = line.split()
         if len(parts) >= 2 and parts[1] == "device":
             serial = parts[0]
-            if serial.startswith("emulator-"):
+            if serial.startswith("emulator-") or serial.startswith("127.0.0.1"):
                 continue
-            if ":5555" in serial:
-                return serial.split(":")[0].strip()
+            if ":" in serial:
+                ip, port = serial.split(":", 1)
+                return ip.strip(), port.strip()
 
     usb_route = run_adb(["-d", "shell", "ip", "route"])
     if "src" in usb_route:
         for line in usb_route.splitlines():
-            if "src" in line and ("wlan" in line or "ap_br" in line):
+            low = line.lower()
+            if "src" in low and ("wlan" in low or "swlan" in low or "ap" in low):
                 parts = line.split()
                 try:
                     ip = parts[parts.index("src") + 1]
                     run_adb(["-d", "tcpip", "5555"])
-                    return ip
+                    return ip, "5555"
                 except Exception:
                     pass
 
     mdns_out = run_adb(["mdns", "services"])
-    m = re.findall(r'(\d+\.\d+\.\d+\.\d+):(\d+)', mdns_out)
-    if m:
-        for candidate_ip, port in m:
-            if candidate_ip != "127.0.0.1":
-                return candidate_ip
+    for line in mdns_out.splitlines():
+        if "_adb-tls-pairing._tcp" in line:
+            continue
+        m = re.search(r"(\d+\.\d+\.\d+\.\d+):(\d+)", line)
+        if m and m.group(1) != "127.0.0.1":
+            return m.group(1), m.group(2)
 
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -90,7 +93,7 @@ def discover_ip():
 
         def probe(host):
             try:
-                with socket.create_connection((host, 5555), timeout=0.8):
+                with socket.create_connection((host, 5555), timeout=0.4):
                     return host
             except Exception:
                 return None
@@ -99,9 +102,9 @@ def discover_ip():
         with concurrent.futures.ThreadPoolExecutor(max_workers=50) as ex:
             for r in ex.map(probe, ips):
                 if r and r != "127.0.0.1":
-                    return r
+                    return r, "5555"
 
-    return None
+    return None, "5555"
 
 
 def main():
@@ -134,12 +137,13 @@ def main():
             "--keyboard=uhid"
         ]
     else:
-        ip = discover_ip()
+        ip, port = discover_endpoint()
         if not ip:
             ip = "192.168.100.178"
 
-        target_flags = ["-s", f"{ip}:5555"]
-        run_adb(["connect", f"{ip}:5555"])
+        endpoint = f"{ip}:{port}"
+        target_flags = ["-s", endpoint]
+        run_adb(["connect", endpoint])
         # Nettoyer les processus zombies et réveiller
         run_adb(target_flags + ["shell", "pkill", "-9", "-f", "app_process"])
         run_adb(target_flags + ["shell", "input", "keyevent", "224"])
@@ -147,7 +151,7 @@ def main():
 
         cmd = [
             SCRCPY_EXE,
-            "-s", f"{ip}:5555",
+            "-s", endpoint,
             "--display-id=0",
             "--max-size=1200",
             "--video-bit-rate=8M",
