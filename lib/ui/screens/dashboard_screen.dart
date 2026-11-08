@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../models/device_info.dart';
+import '../../models/discovered_peer.dart';
 import '../../models/scrcpy_options.dart';
 import '../../services/adb_service.dart';
 import '../../services/network_discovery_service.dart';
@@ -35,6 +36,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _isCastScreenOpen = false;
 
   List<DeviceInfo> _devices = [];
+  List<DiscoveredPeer> _lanPeers = [];
   DeviceInfo? _selectedDevice;
   bool _isScanning = false;
 
@@ -96,9 +98,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
 
     try {
-      final rawDevices = await _adbService.getConnectedDevices();
-      final enriched = <DeviceInfo>[];
+      var rawDevices = await _adbService.getConnectedDevices();
+      final lanPeers = await _discoveryService.discoverLanPeers(
+        knownUsbDevice: rawDevices.where((d) => d.isUsb).firstOrNull,
+        scanFullSubnet: false,
+      );
 
+      // Auto-connect wireless ADB if a dynamic mDNS or :5555 endpoint was discovered.
+      if (rawDevices.where((d) => d.isWifi).isEmpty) {
+        final readyAdb = lanPeers.where((p) => p.adbPort != null).firstOrNull;
+        if (readyAdb != null) {
+          final connected = await _adbService.connectWifi(
+            readyAdb.ip,
+            port: readyAdb.adbPort!,
+          );
+          if (connected) {
+            _addLog(
+              '[AUTO-ADB] Connecté automatiquement à ${readyAdb.ip}:${readyAdb.adbPort}',
+            );
+            rawDevices = await _adbService.getConnectedDevices();
+          }
+        }
+      }
+
+      final enriched = <DeviceInfo>[];
       for (final dev in rawDevices) {
         final withBattery = await _adbService.enrichDeviceTelemetry(dev);
         enriched.add(withBattery);
@@ -107,6 +130,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (!mounted) return;
       setState(() {
         _devices = enriched;
+        _lanPeers = lanPeers;
         if (enriched.isNotEmpty) {
           // Prefer USB connection if available.
           _selectedDevice = enriched.firstWhere(
@@ -217,7 +241,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Future<void> _startCastOnly() async {
+  Future<void> _startCastOnly({String? initialEndpoint}) async {
     if (_isCastScreenOpen || !mounted) return;
     _isCastScreenOpen = true;
     _addLog(
@@ -226,7 +250,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     try {
       await Navigator.of(context).push(
         MaterialPageRoute<void>(
-          builder: (_) => WifiCastScreen(castService: _wifiCastService),
+          builder: (_) => WifiCastScreen(
+            castService: _wifiCastService,
+            discoveryService: _discoveryService,
+            initialMjpegEndpoint: initialEndpoint,
+          ),
         ),
       );
     } finally {
@@ -235,23 +263,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _autoConnectWifi() async {
-    _addLog('[DISCOVERY] Lancement de la découverte dynamique d\'adresse IP...');
+    _addLog(
+      '[DISCOVERY] Scan intelligent du réseau Wi-Fi / Hotspot (mDNS + Passerelle + ARP + ports 5555/8080)...',
+    );
     setState(() {
       _isScanning = true;
     });
 
     try {
-      final ip = await _discoveryService.discoverDeviceIp(
-        knownUsbDevice: _devices.where((d) => d.isUsb).firstOrNull,
+      final usbDev = _devices.where((d) => d.isUsb).firstOrNull;
+      final peers = await _discoveryService.discoverLanPeers(
+        knownUsbDevice: usbDev,
+        scanFullSubnet: true,
       );
 
-      if (ip == null) {
-        _addLog('[ERROR] Aucune adresse IP trouvée sur le réseau local.');
+      if (mounted) {
+        setState(() {
+          _lanPeers = peers;
+        });
+      }
+
+      if (peers.isEmpty) {
+        _addLog('[ERROR] Aucun appareil actif détecté sur ce sous-réseau Wi-Fi.');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text(
-                'Appareil introuvable. Vérifiez que le Wi-Fi et le débogage sans fil sont activés.',
+                'Aucun appareil détecté sur le Wi-Fi. Vérifiez que le téléphone et le PC sont sur le même réseau ou partage de connexion.',
               ),
             ),
           );
@@ -259,23 +297,63 @@ class _DashboardScreenState extends State<DashboardScreen> {
         return;
       }
 
-      _addLog('[DISCOVERY] IP trouvée : $ip. Connexion TCP/IP sur le port 5555...');
-      final connected = await _adbService.connectWifi(ip);
+      // 1. Check if a phone is actively streaming Zero-ADB Wi-Fi Cast (:8080).
+      final castPeer = peers.where((p) => p.castHttpPort != null).firstOrNull;
+      if (castPeer != null &&
+          peers.where((p) => p.adbPort != null).isEmpty &&
+          usbDev == null) {
+        final endpoint = '${castPeer.ip}:${castPeer.castHttpPort}';
+        _addLog('[CAST] Flux Android Wi-Fi Cast détecté sur $endpoint ! Ouverture directe...');
+        await _startCastOnly(initialEndpoint: endpoint);
+        return;
+      }
 
-      if (connected) {
-        _addLog('[SUCCESS] Connecté avec succès à $ip:5555 !');
-        await _refreshDevices();
-      } else {
-        _addLog('[WARN] Échec de connexion directe à $ip. Activation via USB...');
-        final usbDev = _devices.where((d) => d.isUsb).firstOrNull;
-        if (usbDev != null) {
-          await _adbService.switchDeviceToTcpip(usbDev);
-          final retry = await _adbService.connectWifi(ip);
-          if (retry) {
-            _addLog('[SUCCESS] Connecté avec succès après basculement TCP/IP !');
-            await _refreshDevices();
-          }
+      // 2. Check if an ADB endpoint (classic :5555 or dynamic Android 11+ mDNS port) is open.
+      final adbPeer = peers.where((p) => p.adbPort != null).firstOrNull;
+      if (adbPeer != null) {
+        final port = adbPeer.adbPort!;
+        _addLog('[DISCOVERY] Endpoint ADB trouvé : ${adbPeer.ip}:$port. Connexion...');
+        final connected = await _adbService.connectWifi(adbPeer.ip, port: port);
+        if (connected) {
+          _addLog('[SUCCESS] Connecté avec succès à ${adbPeer.ip}:$port !');
+          await _refreshDevices();
+          return;
         }
+      }
+
+      // 3. If USB cable is plugged in, enable tcpip 5555 on the phone and connect to its Wi-Fi IP.
+      final targetIp = peers.first.ip;
+      if (usbDev != null) {
+        _addLog(
+          '[INFO] Téléphone détecté sur $targetIp — activation du port TCP 5555 via le câble USB...',
+        );
+        await _adbService.switchDeviceToTcpip(usbDev);
+        final retry = await _adbService.connectWifi(targetIp);
+        if (retry) {
+          _addLog('[SUCCESS] Connecté sans fil à $targetIp:5555 !');
+          await _refreshDevices();
+          return;
+        }
+      }
+
+      // 4. Phone IP(s) ARE detected on Wi-Fi / Hotspot, explain clearly that ADB port is closed.
+      final summary = peers.map((p) => p.summaryLabel).join(', ');
+      _addLog(
+        '[DISCOVERY] Appareil(s) trouvé(s) sur le Wi-Fi : $summary — port ADB fermé. Pour caster sans débogage, lancez "Android Wi-Fi Cast" sur le téléphone ; pour ADB, branchez 1 fois en USB.',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 6),
+            content: Text(
+              'Téléphone détecté sur $targetIp ! Port ADB fermé : ouvrez "Android Wi-Fi Cast" pour caster sans débogage, ou branchez 1x en USB.',
+            ),
+            action: SnackBarAction(
+              label: 'Ouvrir Cast',
+              onPressed: () => _startCastOnly(initialEndpoint: '$targetIp:8080'),
+            ),
+          ),
+        );
       }
     } finally {
       if (mounted) {
@@ -326,6 +404,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           children: [
             DeviceStatusCard(
               device: _selectedDevice,
+              lanPeers: _lanPeers,
               isScanning: _isScanning,
               onRefresh: _refreshDevices,
             ),

@@ -1,24 +1,36 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 
 import '../../models/cast_frame.dart';
+import '../../models/discovered_peer.dart';
+import '../../services/adb_service.dart';
+import '../../services/network_discovery_service.dart';
 import '../../services/wifi_cast_service.dart';
 import '../theme.dart';
 
 /// Dedicated zero-ADB live Wi-Fi screen casting view.
 ///
 /// Displays live JPEG frames streamed directly over local Wi-Fi (`MediaProjection`
-/// TCP push or HTTP MJPEG stream) without requiring Developer Options, USB
-/// Debugging, or ADB commands on the phone.
+/// TCP push or outbound HTTP MJPEG pull) without requiring Developer Options,
+/// USB Debugging, or ADB commands on the phone.
 class WifiCastScreen extends StatefulWidget {
   /// Backing Wi-Fi receiver and MJPEG client service.
   final WifiCastService castService;
+
+  /// Optional LAN discovery service used to auto-detect phone IPs on Wi-Fi / Hotspot.
+  final NetworkDiscoveryService? discoveryService;
+
+  /// Optional pre-discovered `host:port` stream to open immediately on launch.
+  final String? initialMjpegEndpoint;
 
   /// Creates the [WifiCastScreen].
   const WifiCastScreen({
     super.key,
     required this.castService,
+    this.discoveryService,
+    this.initialMjpegEndpoint,
   });
 
   @override
@@ -27,15 +39,24 @@ class WifiCastScreen extends StatefulWidget {
 
 class _WifiCastScreenState extends State<WifiCastScreen> {
   final TextEditingController _mjpegUrlController = TextEditingController();
+  late final NetworkDiscoveryService _discoveryService;
   List<String> _localIps = const [];
+  List<DiscoveredPeer> _detectedPeers = const [];
   int _quarterTurns = 0;
   bool _isPaused = false;
   CastFrame? _frozenFrame;
   bool _isConnectingMjpeg = false;
+  bool _isScanningLan = false;
 
   @override
   void initState() {
     super.initState();
+    _discoveryService = widget.discoveryService ??
+        NetworkDiscoveryService(adbService: AdbService());
+    if (widget.initialMjpegEndpoint != null &&
+        widget.initialMjpegEndpoint!.isNotEmpty) {
+      _mjpegUrlController.text = widget.initialMjpegEndpoint!;
+    }
     _bootReceiver();
   }
 
@@ -48,6 +69,53 @@ class _WifiCastScreenState extends State<WifiCastScreen> {
       setState(() {
         _localIps = ips;
       });
+    }
+    if (widget.initialMjpegEndpoint != null &&
+        widget.initialMjpegEndpoint!.isNotEmpty) {
+      await _connectToMjpeg();
+    } else {
+      unawaited(_scanWifiForPhones(autoConnectIfStreamOpen: true));
+    }
+  }
+
+  Future<void> _scanWifiForPhones({bool autoConnectIfStreamOpen = true}) async {
+    if (_isScanningLan || !mounted) return;
+    setState(() {
+      _isScanningLan = true;
+    });
+
+    try {
+      final peers = await _discoveryService.discoverLanPeers(
+        scanFullSubnet: true,
+      );
+      if (!mounted) return;
+
+      setState(() {
+        _detectedPeers = peers;
+        if (_mjpegUrlController.text.trim().isEmpty && peers.isNotEmpty) {
+          final first = peers.first;
+          final port = first.castHttpPort ??
+              NetworkDiscoveryService.defaultCastHttpPort;
+          _mjpegUrlController.text = '${first.ip}:$port';
+        }
+      });
+
+      if (autoConnectIfStreamOpen &&
+          widget.castService.connectedPeerNotifier.value == null) {
+        final activeCast =
+            peers.where((p) => p.castHttpPort != null).firstOrNull;
+        if (activeCast != null) {
+          final target = '${activeCast.ip}:${activeCast.castHttpPort}';
+          _mjpegUrlController.text = target;
+          await _connectToMjpeg();
+        }
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isScanningLan = false;
+        });
+      }
     }
   }
 
@@ -362,18 +430,74 @@ class _WifiCastScreenState extends State<WifiCastScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        'Connexion directe à une adresse de flux Wi-Fi (MJPEG)',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 15,
-                        ),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Détection Automatique des Téléphones sur le Wi-Fi / Hotspot',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15,
+                              ),
+                            ),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _isScanningLan
+                                ? null
+                                : () => _scanWifiForPhones(
+                                      autoConnectIfStreamOpen: true,
+                                    ),
+                            icon: _isScanningLan
+                                ? const SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.radar, size: 16),
+                            label: Text(
+                              _isScanningLan
+                                  ? 'Scan Wi-Fi...'
+                                  : 'Scanner le Wi-Fi',
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 6),
                       const Text(
-                        'Si votre téléphone affiche une adresse locale (ex: http://192.168.43.1:8080 via Android Wi-Fi Cast ou ScreenStream), entrez-la ici pour afficher l\'image immédiatement :',
+                        'Contourne automatiquement le pare-feu Windows Public : sélectionnez le téléphone détecté sur votre Wi-Fi ou entrez son adresse locale (ex: http://10.29.128.223:8080) :',
                         style: TextStyle(color: Colors.white70, fontSize: 13),
                       ),
+                      if (_detectedPeers.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: _detectedPeers.map((peer) {
+                            final port = peer.castHttpPort ??
+                                NetworkDiscoveryService.defaultCastHttpPort;
+                            final isReady = peer.castHttpPort != null;
+                            return ActionChip(
+                              avatar: Icon(
+                                isReady
+                                    ? Icons.cast_connected
+                                    : Icons.smartphone,
+                                size: 16,
+                                color: isReady
+                                    ? AppTheme.secondary
+                                    : AppTheme.primary,
+                              ),
+                              label: Text(peer.summaryLabel),
+                              onPressed: () {
+                                _mjpegUrlController.text = '${peer.ip}:$port';
+                                _connectToMjpeg();
+                              },
+                            );
+                          }).toList(),
+                        ),
+                      ],
                       const SizedBox(height: 12),
                       Row(
                         children: [
