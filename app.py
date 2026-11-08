@@ -1125,13 +1125,18 @@ class PixelControlApp(ctk.CTk):
                                 return
 
                             def notify_no_wifi():
-                                messagebox.showerror(
-                                    "Smartphone introuvable en ADB Wi-Fi",
-                                    "Impossible de joindre le mode débogage sur le Wi-Fi.\n\n"
-                                    "• Pour afficher l'écran SANS mode débogage, cliquez sur « Cast Wi-Fi Direct ».\n"
-                                    "• Ou branchez une fois le câble USB pour activer le pont ADB sans fil."
+                                ans = messagebox.askyesno(
+                                    "Mode Débogage ADB non actif",
+                                    f"Votre téléphone est bien détecté sur le réseau Wi-Fi ({ip}), mais le mode débogage USB/ADB n'est pas activé sur l'appareil.\n\n"
+                                    "Voulez-vous ouvrir l'écran immédiatement en « Cast Wi-Fi Direct » (sans câble ni mode débogage requis) ?"
                                 )
-                                self.info_label.configure(text="Smartphone non joignable en ADB Wi-Fi.")
+                                if ans:
+                                    self.open_wifi_cast_window()
+                                    self.info_label.configure(text=f"Cast Wi-Fi ouvert pour {ip}")
+                                else:
+                                    self.info_label.configure(
+                                        text="Pour le contrôle complet souris/clavier, branchez 1x le téléphone en USB."
+                                    )
                             self.run_on_ui(notify_no_wifi)
                             return
 
