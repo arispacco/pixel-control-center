@@ -18,6 +18,7 @@ import customtkinter as ctk
 
 import glob
 import shutil
+from wifi_cast_viewer import WifiCastReceiverService, WifiCastWindow, get_local_lan_ip
 
 # Configuration de l'apparence
 ctk.set_appearance_mode("Dark")
@@ -56,21 +57,75 @@ class PixelControlApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("Pixel Control Center - Miroir & Contrôle PC")
-        self.geometry("800x780")
-        self.minsize(720, 720)
+        self.title("Android / Pixel Control Center — Miroir, Contrôle & Cast Wi-Fi")
+        self.geometry("860x830")
+        self.minsize(760, 750)
 
         # Processus scrcpy actif
         self.scrcpy_proc = None
         self.auto_reconnect_active = False
         self.reconnect_thread = None
         self.is_discovering = False
+        self.cast_window = None
 
         self.load_config()
         self.create_widgets()
 
+        # Service récepteur Cast Wi-Fi sans débogage actif dès l'ouverture
+        self.cast_service = WifiCastReceiverService(
+            on_frame=self._on_cast_frame_from_thread,
+            on_status=self._on_cast_status_from_thread,
+        )
+        self.cast_service.start()
+        self.protocol("WM_DELETE_WINDOW", self._on_close_app)
+
         # Lancer immédiatement la détection des appareils et de l'IP Wi-Fi
         self.refresh_devices_async()
+
+    def _on_close_app(self):
+        try:
+            self.cast_service.stop()
+        except Exception:
+            pass
+        self.stop_scrcpy()
+        self.destroy()
+
+    def _on_cast_status_from_thread(self, text):
+        def apply_status():
+            if hasattr(self, "lbl_cast_tab_status"):
+                self.lbl_cast_tab_status.configure(text=text)
+            if self.cast_window and self.cast_window.winfo_exists():
+                self.cast_window.update_status_banner(text)
+
+        try:
+            self.after(0, apply_status)
+        except Exception:
+            pass
+
+    def _on_cast_frame_from_thread(self, jpeg_bytes, width, height, source_label):
+        def ensure_and_push():
+            if self.cast_window is None or not self.cast_window.winfo_exists():
+                self.open_wifi_cast_window()
+            if self.cast_window and self.cast_window.winfo_exists():
+                self.cast_window.push_jpeg_frame(jpeg_bytes, width, height, source_label)
+
+        try:
+            self.after(0, ensure_and_push)
+        except Exception:
+            pass
+
+    def open_wifi_cast_window(self):
+        current_ip = self.entry_ip.get().strip() if hasattr(self, "entry_ip") else ""
+        if self.cast_window is not None and self.cast_window.winfo_exists():
+            self.cast_window.lift()
+            self.cast_window.focus_force()
+            return
+        self.cast_window = WifiCastWindow(
+            self,
+            service=self.cast_service,
+            initial_ip=current_ip,
+            on_scan_ip=self.discover_pixel_ip,
+        )
 
     def load_config(self):
         self.config = {
@@ -146,11 +201,22 @@ class PixelControlApp(ctk.CTk):
 
         title_label = ctk.CTkLabel(
             header_frame,
-            text="📱 Pixel Control Center",
-            font=ctk.CTkFont(size=22, weight="bold"),
+            text="📱 Android / Pixel Control Center",
+            font=ctk.CTkFont(size=21, weight="bold"),
             text_color="#60a5fa"
         )
         title_label.pack(side="left", padx=16, pady=12)
+
+        ctk.CTkButton(
+            header_frame,
+            text="📡 Cast Sans Débogage",
+            command=self.open_wifi_cast_window,
+            height=32,
+            width=175,
+            fg_color="#0d9488",
+            hover_color="#0f766e",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(side="right", padx=(6, 14), pady=10)
 
         self.status_badge = ctk.CTkLabel(
             header_frame,
@@ -158,17 +224,19 @@ class PixelControlApp(ctk.CTk):
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color="#fbbf24"
         )
-        self.status_badge.pack(side="right", padx=16, pady=12)
+        self.status_badge.pack(side="right", padx=10, pady=12)
 
         # Tabview
         self.tabview = ctk.CTkTabview(self, corner_radius=12)
         self.tabview.pack(fill="both", expand=True, padx=16, pady=8)
 
         self.tab_conn = self.tabview.add("Connexion & Miroir")
+        self.tab_cast = self.tabview.add("📡 Cast Sans Débogage")
         self.tab_config = self.tabview.add("Personnalisation & Options")
         self.tab_remote = self.tabview.add("Télécommande & Outils")
 
         self.build_conn_tab()
+        self.build_cast_tab()
         self.build_config_tab()
         self.build_remote_tab()
 
@@ -207,80 +275,80 @@ class PixelControlApp(ctk.CTk):
     # ------------------ TAB 1 : CONNEXION ------------------
     def build_conn_tab(self):
         info_frame = ctk.CTkFrame(self.tab_conn, corner_radius=10)
-        info_frame.pack(fill="x", padx=12, pady=10)
+        info_frame.pack(fill="x", padx=12, pady=(8, 6))
 
         ctk.CTkLabel(
             info_frame,
-            text="Statut du Pixel",
-            font=ctk.CTkFont(size=15, weight="bold")
-        ).pack(anchor="w", padx=14, pady=(10, 4))
+            text="Statut du Smartphone Android (Pixel, Samsung, Xiaomi, Tecno, Infinix…)",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(anchor="w", padx=14, pady=(8, 2))
 
         self.lbl_device_info = ctk.CTkLabel(
             info_frame,
-            text="Recherche du Google Pixel et de son adresse IP...",
+            text="Recherche du smartphone Android et de son adresse IP...",
             font=ctk.CTkFont(size=13),
             justify="left"
         )
-        self.lbl_device_info.pack(anchor="w", padx=14, pady=(0, 10))
+        self.lbl_device_info.pack(anchor="w", padx=14, pady=(0, 8))
 
         # Split: USB vs Wi-Fi
         modes_frame = ctk.CTkFrame(self.tab_conn, fg_color="transparent")
-        modes_frame.pack(fill="both", expand=True, padx=6, pady=6)
+        modes_frame.pack(fill="x", padx=6, pady=4)
         modes_frame.columnconfigure(0, weight=1)
         modes_frame.columnconfigure(1, weight=1)
 
         # Box 1: Mode Câble USB
         usb_box = ctk.CTkFrame(modes_frame, corner_radius=12)
-        usb_box.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        usb_box.grid(row=0, column=0, sticky="nsew", padx=6, pady=4)
 
         ctk.CTkLabel(
             usb_box,
             text="🔌 Connexion Câble USB",
             font=ctk.CTkFont(size=15, weight="bold")
-        ).pack(anchor="w", padx=14, pady=(14, 6))
+        ).pack(anchor="w", padx=14, pady=(12, 4))
 
         ctk.CTkLabel(
             usb_box,
-            text="Stabilité maximale et recharge du téléphone en même temps.",
+            text="Contrôle complet souris/clavier + recharge du téléphone.",
             text_color="#9ca3af",
             font=ctk.CTkFont(size=12),
-            wraplength=280,
+            wraplength=310,
             justify="left"
-        ).pack(anchor="w", padx=14, pady=(0, 14))
+        ).pack(anchor="w", padx=14, pady=(0, 12))
 
         self.btn_launch_usb = ctk.CTkButton(
             usb_box,
-            text="🚀 Afficher l'écran (USB)",
-            command=lambda: self.launch_scrcpy(mode="usb"),
-            height=42,
+            text="🚀 Contrôler l'écran (USB)",
+            command=lambda: self.launch_scrcpy(mode="usb", passive_cast=False),
+            height=40,
             font=ctk.CTkFont(size=14, weight="bold"),
             fg_color="#2563eb",
             hover_color="#1d4ed8"
         )
-        self.btn_launch_usb.pack(fill="x", padx=14, pady=(0, 14))
+        self.btn_launch_usb.pack(fill="x", padx=14, pady=(0, 12))
 
         # Box 2: Mode Wi-Fi Sans Fil
         wifi_box = ctk.CTkFrame(modes_frame, corner_radius=12)
-        wifi_box.grid(row=0, column=1, sticky="nsew", padx=6, pady=6)
+        wifi_box.grid(row=0, column=1, sticky="nsew", padx=6, pady=4)
 
         ctk.CTkLabel(
             wifi_box,
             text="📶 Connexion Sans Fil (Wi-Fi)",
             font=ctk.CTkFont(size=15, weight="bold")
-        ).pack(anchor="w", padx=14, pady=(14, 6))
+        ).pack(anchor="w", padx=14, pady=(12, 4))
 
         ctk.CTkLabel(
             wifi_box,
             text="Fonctionne sur n'importe quel Wi-Fi ou partage de connexion !",
             text_color="#9ca3af",
             font=ctk.CTkFont(size=12),
-            wraplength=280,
+            wraplength=310,
             justify="left"
-        ).pack(anchor="w", padx=14, pady=(0, 8))
+        ).pack(anchor="w", padx=14, pady=(0, 6))
 
         # IP Field with Auto-detect button
         ip_frame = ctk.CTkFrame(wifi_box, fg_color="transparent")
-        ip_frame.pack(fill="x", padx=14, pady=4)
+        ip_frame.pack(fill="x", padx=14, pady=3)
         ctk.CTkLabel(ip_frame, text="Adresse IP :", font=ctk.CTkFont(size=12)).pack(side="left")
 
         self.entry_ip = ctk.CTkEntry(ip_frame, width=130, placeholder_text="192.168.x.x")
@@ -290,7 +358,7 @@ class PixelControlApp(ctk.CTk):
         self.btn_auto_ip = ctk.CTkButton(
             ip_frame,
             text="🔍 Détecter",
-            width=70,
+            width=75,
             height=28,
             font=ctk.CTkFont(size=11),
             fg_color="#374151",
@@ -301,7 +369,7 @@ class PixelControlApp(ctk.CTk):
 
         # Port Field
         port_frame = ctk.CTkFrame(wifi_box, fg_color="transparent")
-        port_frame.pack(fill="x", padx=14, pady=4)
+        port_frame.pack(fill="x", padx=14, pady=3)
         ctk.CTkLabel(port_frame, text="Port TCP :", font=ctk.CTkFont(size=12)).pack(side="left")
         self.entry_port = ctk.CTkEntry(port_frame, width=80, placeholder_text="5555")
         self.entry_port.insert(0, self.config.get("last_port", "5555"))
@@ -310,18 +378,61 @@ class PixelControlApp(ctk.CTk):
         # Action Wi-Fi
         self.btn_launch_wifi = ctk.CTkButton(
             wifi_box,
-            text="🚀 Afficher l'écran (Wi-Fi)",
-            command=lambda: self.launch_scrcpy(mode="wifi"),
-            height=42,
+            text="🚀 Contrôler l'écran (Wi-Fi)",
+            command=lambda: self.launch_scrcpy(mode="wifi", passive_cast=False),
+            height=40,
             font=ctk.CTkFont(size=14, weight="bold"),
             fg_color="#059669",
             hover_color="#047857"
         )
-        self.btn_launch_wifi.pack(fill="x", padx=14, pady=(12, 14))
+        self.btn_launch_wifi.pack(fill="x", padx=14, pady=(8, 12))
+
+        # Box 3: Mode Cast Simple (Affichage Seul / Zéro ADB)
+        cast_card = ctk.CTkFrame(self.tab_conn, corner_radius=12, fg_color=("#1e293b", "#0f172a"))
+        cast_card.pack(fill="x", padx=12, pady=6)
+
+        ctk.CTkLabel(
+            cast_card,
+            text="📺 Caster simplement son écran (Affichage seul — Tactile du téléphone actif)",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color="#2dd4bf",
+        ).pack(anchor="w", padx=14, pady=(10, 2))
+
+        ctk.CTkLabel(
+            cast_card,
+            text="Idéal si le tactile marche encore ou pour quelqu'un qui ne connaît rien au mode débogage ADB :",
+            font=ctk.CTkFont(size=12),
+            text_color="#94a3b8",
+        ).pack(anchor="w", padx=14, pady=(0, 8))
+
+        cast_btns = ctk.CTkFrame(cast_card, fg_color="transparent")
+        cast_btns.pack(fill="x", padx=10, pady=(0, 10))
+        cast_btns.columnconfigure(0, weight=1)
+        cast_btns.columnconfigure(1, weight=1)
+
+        ctk.CTkButton(
+            cast_btns,
+            text="📡 Cast Wi-Fi Direct (Sans Mode Débogage)",
+            command=self.open_wifi_cast_window,
+            height=38,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#0d9488",
+            hover_color="#0f766e",
+        ).grid(row=0, column=0, sticky="ew", padx=4)
+
+        ctk.CTkButton(
+            cast_btns,
+            text="📺 Cast Lecture Seule (Câble ou Wi-Fi)",
+            command=lambda: self.launch_scrcpy(mode="auto", passive_cast=True),
+            height=38,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#4f46e5",
+            hover_color="#4338ca",
+        ).grid(row=0, column=1, sticky="ew", padx=4)
 
         # Auto-reconnect banner
         reconnect_box = ctk.CTkFrame(self.tab_conn, corner_radius=10)
-        reconnect_box.pack(fill="x", padx=12, pady=(4, 8))
+        reconnect_box.pack(fill="x", padx=12, pady=(4, 6))
 
         self.sw_autoreconnect = ctk.CTkSwitch(
             reconnect_box,
@@ -329,7 +440,127 @@ class PixelControlApp(ctk.CTk):
             font=ctk.CTkFont(size=13, weight="bold"),
             command=self.toggle_autoreconnect
         )
-        self.sw_autoreconnect.pack(anchor="w", padx=14, pady=12)
+        self.sw_autoreconnect.pack(anchor="w", padx=14, pady=10)
+
+    # ------------------ TAB 2 : CAST WI-FI SANS DÉBOGAGE ------------------
+    def build_cast_tab(self):
+        container = ctk.CTkScrollableFrame(self.tab_cast, corner_radius=10)
+        container.pack(fill="both", expand=True, padx=8, pady=8)
+
+        hero = ctk.CTkFrame(container, corner_radius=12, fg_color=("#1e293b", "#0f172a"))
+        hero.pack(fill="x", padx=10, pady=10)
+
+        ctk.CTkLabel(
+            hero,
+            text="📡 Cast Wi-Fi en Direct — Zéro Câble & Zéro Mode Débogage",
+            font=ctk.CTkFont(size=17, weight="bold"),
+            text_color="#2dd4bf",
+        ).pack(anchor="w", padx=16, pady=(14, 6))
+
+        ctk.CTkLabel(
+            hero,
+            text=(
+                "Fonctionne sur TOUS les téléphones Android (Samsung, Xiaomi, Tecno, Infinix, Oppo, Pixel…).\n"
+                "Aucun réglage développeur requis : c'est un simple transfert d'image en direct par Wi-Fi."
+            ),
+            font=ctk.CTkFont(size=13),
+            text_color="#cbd5e1",
+            justify="left",
+        ).pack(anchor="w", padx=16, pady=(0, 10))
+
+        self.lbl_cast_tab_status = ctk.CTkLabel(
+            hero,
+            text=f"● PC prêt à recevoir sur {get_local_lan_ip()}:5959 (Découverte auto UDP :5958 active)",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#4ade80",
+        )
+        self.lbl_cast_tab_status.pack(anchor="w", padx=16, pady=(0, 12))
+
+        ctk.CTkButton(
+            hero,
+            text="▶️ Ouvrir l'écran de réception Cast Wi-Fi en Direct",
+            command=self.open_wifi_cast_window,
+            height=44,
+            font=ctk.CTkFont(size=15, weight="bold"),
+            fg_color="#0d9488",
+            hover_color="#0f766e",
+        ).pack(fill="x", padx=16, pady=(0, 14))
+
+        steps_card = ctk.CTkFrame(container, corner_radius=12)
+        steps_card.pack(fill="x", padx=10, pady=8)
+
+        ctk.CTkLabel(
+            steps_card,
+            text="Comment l'utiliser en 3 secondes :",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color="#60a5fa",
+        ).pack(anchor="w", padx=16, pady=(12, 6))
+
+        ctk.CTkLabel(
+            steps_card,
+            text=(
+                "1. Connectez le téléphone et le PC au même Wi-Fi (ou au partage de connexion du téléphone).\n"
+                "2. Ouvrez la petite application « Android Wi-Fi Cast » sur le téléphone.\n"
+                "3. Appuyez sur « Caster vers mon PC » (ou « Caster sur le Navigateur Web ») et validez :\n"
+                "   l'écran du téléphone s'affiche automatiquement sur votre PC !"
+            ),
+            font=ctk.CTkFont(size=13),
+            justify="left",
+            text_color="#e2e8f0",
+        ).pack(anchor="w", padx=16, pady=(0, 12))
+
+        ctk.CTkButton(
+            steps_card,
+            text="📲 Installer « Android Wi-Fi Cast » sur un téléphone branché en USB (1 clic)",
+            command=self.install_cast_sender_apk,
+            height=38,
+            fg_color="#2563eb",
+            hover_color="#1d4ed8",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(fill="x", padx=16, pady=(0, 14))
+
+    def install_cast_sender_apk(self):
+        apk_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "android_cast_sender",
+            "app",
+            "build",
+            "outputs",
+            "apk",
+            "debug",
+            "app-debug.apk",
+        )
+        if not os.path.isfile(apk_path):
+            messagebox.showwarning("APK introuvable", f"Fichier non trouvé :\n{apk_path}")
+            return
+
+        self.info_label.configure(text="Installation de Android Wi-Fi Cast sur le téléphone...")
+
+        def run_install():
+            target = self.get_target()
+            if not target:
+                self.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        "Téléphone non détecté en ADB",
+                        f"Branchez le téléphone en USB ou copiez l'APK :\n{apk_path}",
+                    ),
+                )
+                return
+            out = self.run_adb(target + ["install", "-r", apk_path], timeout=30)
+            ok = "success" in out.lower()
+            self.after(
+                0,
+                lambda: messagebox.showinfo(
+                    "Installation terminée" if ok else "Résultat installation",
+                    "Android Wi-Fi Cast est installé sur votre téléphone !"
+                    if ok
+                    else f"Sortie ADB :\n{out}",
+                ),
+            )
+            self.after(0, lambda: self.info_label.configure(text="Android Wi-Fi Cast installé !"))
+
+        threading.Thread(target=run_install, daemon=True).start()
 
     # ------------------ TAB 2 : CONFIGURATION ------------------
     def build_config_tab(self):
@@ -754,7 +985,7 @@ class PixelControlApp(ctk.CTk):
 
         threading.Thread(target=task, daemon=True).start()
 
-    def launch_scrcpy(self, mode="auto"):
+    def launch_scrcpy(self, mode="auto", passive_cast=False):
         self.stop_scrcpy()
         time.sleep(0.3)
 
@@ -762,10 +993,13 @@ class PixelControlApp(ctk.CTk):
 
         def task():
             usb, wifi = self.get_connected_devices()
-            target_mode = mode
+            if mode == "auto":
+                target_mode = "usb" if usb else "wifi"
+            else:
+                target_mode = mode
 
             # 1. Gestion du mode USB
-            if mode == "usb":
+            if target_mode == "usb":
                 if not usb:
                     if wifi:
                         target_mode = "wifi"
@@ -774,9 +1008,9 @@ class PixelControlApp(ctk.CTk):
                         def notify_no_usb():
                             messagebox.showwarning(
                                 "Câble USB non détecté",
-                                "Aucun smartphone Pixel n'est détecté en USB.\n\n"
-                                "1. Assurez-vous que le câble USB est bien branché entre votre PC et le téléphone.\n"
-                                "2. Si vous n'avez pas de câble, cliquez sur 'Afficher l'écran (Wi-Fi)'."
+                                "Aucun smartphone Android n'est détecté en USB.\n\n"
+                                "1. Assurez-vous que le câble USB est bien branché.\n"
+                                "2. Pour afficher l'écran sans câble ni mode débogage, cliquez sur « Cast Wi-Fi Direct »."
                             )
                             self.info_label.configure(text="Échec : câble USB non branché.")
                         self.after(0, notify_no_usb)
@@ -789,23 +1023,29 @@ class PixelControlApp(ctk.CTk):
             if target_mode == "wifi":
                 # Vérifier si l'appareil est déjà connecté
                 if not wifi or not any(ip in w for w in wifi):
-                    self.after(0, lambda: self.info_label.configure(text="Connexion Wi-Fi au Pixel..."))
+                    self.after(0, lambda: self.info_label.configure(text="Connexion Wi-Fi au smartphone..."))
                     conn_res = self.run_adb(["connect", f"{ip}:{port}"], timeout=8)
                     if "connected" not in conn_res.lower():
-                        new_ip, _ = self.discover_pixel_ip()
-                        if new_ip:
-                            ip = new_ip
+                        new_ip, det_port = self.discover_pixel_ip()
+                        if new_ip and det_port == "8080":
                             self.after(0, lambda: self.update_ip_entry(new_ip))
-                            self.run_adb(["connect", f"{ip}:{port}"], timeout=8)
-                        else:
+                            self.after(0, self.open_wifi_cast_window)
+                            return
+                        elif new_ip:
+                            ip = new_ip
+                            if det_port:
+                                port = det_port
+                            self.after(0, lambda: self.update_ip_entry(new_ip))
+                            conn_res = self.run_adb(["connect", f"{ip}:{port}"], timeout=8)
+                        if "connected" not in conn_res.lower():
                             def notify_no_wifi():
                                 messagebox.showerror(
-                                    "Pixel introuvable en Wi-Fi",
-                                    "Impossible de joindre le Pixel sur le réseau Wi-Fi.\n\n"
-                                    "• Vérifiez que votre PC et votre Pixel sont bien sur la même box / Wi-Fi.\n"
-                                    "• Si vous venez de redémarrer le téléphone, branchez-le une fois en USB."
+                                    "Smartphone introuvable en ADB Wi-Fi",
+                                    "Impossible de joindre le mode débogage sur le Wi-Fi.\n\n"
+                                    "• Pour afficher l'écran SANS mode débogage, cliquez sur « Cast Wi-Fi Direct ».\n"
+                                    "• Ou branchez une fois le câble USB pour activer le pont ADB sans fil."
                                 )
-                                self.info_label.configure(text="Pixel introuvable en Wi-Fi.")
+                                self.info_label.configure(text="Smartphone non joignable en ADB Wi-Fi.")
                             self.after(0, notify_no_wifi)
                             return
 
@@ -824,24 +1064,33 @@ class PixelControlApp(ctk.CTk):
             self.run_adb(target_adb + ["shell", "input", "keyevent", "224"])
             self.run_adb(target_adb + ["shell", "wm", "dismiss-keyguard"])
 
-            if self.sw_turn_off.get():
-                # Sur Google Pixel Tensor, turn-screen-off coupe le flux vidéo et produit un écran noir sur PC.
-                # On règle la luminosité à 0 (noir OLED) pour protéger la dalle tout en gardant l'image sur PC !
-                self.run_adb(target_adb + ["shell", "settings", "put", "system", "screen_brightness", "0"])
-            else:
-                self.run_adb(target_adb + ["shell", "settings", "put", "system", "screen_brightness", "100"])
-
-            self.run_adb(target_adb + ["shell", "settings", "put", "secure", "show_ime_with_hard_keyboard", "1"])
-            if self.sw_stay_awake.get():
+            if passive_cast:
+                args.append("--no-control")
                 args.append("--stay-awake")
+                self.run_adb(target_adb + ["shell", "settings", "put", "system", "screen_brightness", "120"])
+            else:
+                if self.sw_turn_off.get():
+                    manufacturer = self.run_adb(target_adb + ["shell", "getprop", "ro.product.manufacturer"]).lower()
+                    if "google" in manufacturer:
+                        # Sur Google Pixel Tensor, turn-screen-off coupe le flux vidéo : luminosité 0 protège l'OLED
+                        self.run_adb(target_adb + ["shell", "settings", "put", "system", "screen_brightness", "0"])
+                    else:
+                        args.append("--turn-screen-off")
+                else:
+                    self.run_adb(target_adb + ["shell", "settings", "put", "system", "screen_brightness", "100"])
+
+                self.run_adb(target_adb + ["shell", "settings", "put", "secure", "show_ime_with_hard_keyboard", "1"])
+                if self.sw_stay_awake.get():
+                    args.append("--stay-awake")
+                if self.sw_uhid.get():
+                    args.append("--keyboard=uhid")
+
             if self.sw_always_on_top.get():
                 args.append("--always-on-top")
             if self.sw_fullscreen.get():
                 args.append("--fullscreen")
             if not self.sw_audio.get():
                 args.append("--no-audio")
-            if self.sw_uhid.get():
-                args.append("--keyboard=uhid")
 
             # Résolution
             res_map = {"1080p (Full HD)": "1080", "720p (HD Rapide)": "720", "480p (Fluide Wi-Fi)": "480"}
@@ -946,7 +1195,10 @@ class PixelControlApp(ctk.CTk):
             target = self.get_target()
             if not target:
                 return
-            out_file = os.path.join(os.path.expanduser("~"), "Desktop", f"pixel_capture_{int(time.time())}.png")
+            desktop = os.path.join(os.path.expanduser("~"), "OneDrive", "Desktop")
+            if not os.path.isdir(desktop):
+                desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+            out_file = os.path.join(desktop, f"capture_android_{int(time.time())}.png")
             self.run_adb(target + ["shell", "screencap", "-p", "/sdcard/temp_screen.png"])
             self.run_adb(target + ["pull", "/sdcard/temp_screen.png", out_file])
             def done():
