@@ -748,7 +748,8 @@ class PixelControlApp(ctk.CTk):
 
     # ------------------ DÉTECTION AUTOMATIQUE D'IP ------------------
     def _extract_gateway_and_arp_peers(self, subnet_prefix):
-        candidates = []
+        gateways = []
+        arp_peers = []
         if os.name == "nt":
             try:
                 ipcfg = subprocess.run(
@@ -763,8 +764,8 @@ class PixelControlApp(ctk.CTk):
                     if "passerelle" in low or "gateway" in low:
                         for ip in re.findall(r"(\d+\.\d+\.\d+\.\d+)", line):
                             if ip.startswith(subnet_prefix + ".") and not ip.endswith(".255"):
-                                if ip not in candidates:
-                                    candidates.append(ip)
+                                if ip not in gateways:
+                                    gateways.append(ip)
             except Exception:
                 pass
 
@@ -782,12 +783,13 @@ class PixelControlApp(ctk.CTk):
                     continue
                 ip = m.group(1)
                 if ip.startswith(subnet_prefix + ".") and not ip.endswith(".255") and not ip.endswith(".0"):
-                    if ip not in candidates:
-                        candidates.append(ip)
+                    if ip not in gateways and ip not in arp_peers:
+                        arp_peers.append(ip)
         except Exception:
             pass
 
-        return candidates
+        # Prioriser les autres appareils du Wi-Fi avant la passerelle/routeur
+        return arp_peers + gateways
 
     def discover_pixel_ip(self):
         devices_out = self.run_adb(["devices"])
