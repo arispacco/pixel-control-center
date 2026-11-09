@@ -836,6 +836,57 @@ class PixelControlApp(ctk.CTk):
         # Prioriser les autres appareils du Wi-Fi avant la passerelle/routeur
         return arp_peers + gateways
 
+    def _scan_target_adb_port(self, host):
+        """Détecte automatiquement le port ADB actif : 5555, mDNS, 8080 ou plage dynamique 30000-50000."""
+        # 1. Port standard 5555
+        try:
+            with socket.create_connection((host, 5555), timeout=0.25):
+                return "5555"
+        except Exception:
+            pass
+
+        # 2. mDNS actif
+        mdns_out = self.run_adb(["mdns", "services"])
+        for line in mdns_out.splitlines():
+            if "_adb-tls-pairing._tcp" in line:
+                continue
+            m = re.search(r"(\d+\.\d+\.\d+\.\d+):(\d+)", line)
+            if m and m.group(1) == host:
+                return m.group(2)
+
+        # 3. Port Cast Wi-Fi Direct (8080)
+        try:
+            with socket.create_connection((host, 8080), timeout=0.2):
+                return "8080"
+        except Exception:
+            pass
+
+        # 4. Balayage automatique de la plage Débogage sans fil Android (35000-45000)
+        stop_event = threading.Event()
+
+        def probe_port(p):
+            if stop_event.is_set():
+                return None
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.2)
+                s.connect((host, p))
+                s.close()
+                stop_event.set()
+                return p
+            except Exception:
+                return None
+
+        priority_range = list(range(35000, 45001))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=200) as ex:
+            futures = [ex.submit(probe_port, p) for p in priority_range]
+            for f in concurrent.futures.as_completed(futures):
+                res = f.result()
+                if res:
+                    return str(res)
+
+        return None
+
     def discover_pixel_ip(self):
         devices_out = self.run_adb(["devices"])
         for line in devices_out.splitlines():
@@ -884,12 +935,9 @@ class PixelControlApp(ctk.CTk):
             ]
 
             def probe_service(host):
-                for p in (5555, 8080):
-                    try:
-                        with socket.create_connection((host, p), timeout=0.22):
-                            return host, str(p)
-                    except Exception:
-                        pass
+                p = self._scan_target_adb_port(host)
+                if p:
+                    return host, p
                 return None
 
             for h in priority_hosts:
@@ -1128,17 +1176,26 @@ class PixelControlApp(ctk.CTk):
                     self.run_on_ui(lambda: self.info_label.configure(text="Connexion Wi-Fi au smartphone..."))
                     conn_res = self.run_adb(["connect", f"{ip}:{port}"], timeout=8)
                     if "connected" not in conn_res.lower():
-                        new_ip, det_port = self.discover_pixel_ip()
-                        if new_ip and det_port == "8080":
-                            self.run_on_ui(lambda: self.update_ip_entry(new_ip))
-                            self.run_on_ui(self.open_wifi_cast_window)
-                            return
-                        elif new_ip:
-                            ip = new_ip
-                            if det_port:
-                                port = det_port
-                            self.run_on_ui(lambda: self.update_ip_entry(new_ip))
+                        # Balayage dynamique automatique pour détecter le port sans fil s'il diffère
+                        auto_port = self._scan_target_adb_port(ip)
+                        if auto_port and auto_port != "8080" and auto_port != port:
+                            port = auto_port
+                            self.run_on_ui(lambda: self.entry_port.delete(0, "end"))
+                            self.run_on_ui(lambda: self.entry_port.insert(0, auto_port))
                             conn_res = self.run_adb(["connect", f"{ip}:{port}"], timeout=8)
+
+                        if "connected" not in conn_res.lower():
+                            new_ip, det_port = self.discover_pixel_ip()
+                            if new_ip and det_port == "8080":
+                                self.run_on_ui(lambda: self.update_ip_entry(new_ip))
+                                self.run_on_ui(self.open_wifi_cast_window)
+                                return
+                            elif new_ip:
+                                ip = new_ip
+                                if det_port:
+                                    port = det_port
+                                self.run_on_ui(lambda: self.update_ip_entry(new_ip))
+                                conn_res = self.run_adb(["connect", f"{ip}:{port}"], timeout=8)
                         if "connected" not in conn_res.lower():
                             if passive_cast:
                                 self.run_on_ui(
