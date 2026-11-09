@@ -373,8 +373,25 @@ class PixelControlApp(ctk.CTk):
         ip_frame.pack(fill="x", padx=14, pady=3)
         ctk.CTkLabel(ip_frame, text="Adresse IP :", font=ctk.CTkFont(size=12)).pack(side="left")
 
+        initial_ip = self.config.get("last_ip", "")
+        # Si l'IP sauvegardée ne correspond pas au sous-réseau Wi-Fi/Hotspot actif, basculer sur la passerelle
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            my_ip = s.getsockname()[0]
+            if my_ip and my_ip != "127.0.0.1":
+                sub = ".".join(my_ip.split(".")[:3])
+                if not initial_ip.startswith(sub + "."):
+                    peers = self._extract_gateway_and_arp_peers(sub)
+                    if peers:
+                        initial_ip = peers[0]
+        except Exception:
+            pass
+        finally:
+            s.close()
+
         self.entry_ip = ctk.CTkEntry(ip_frame, width=130, placeholder_text="192.168.x.x")
-        self.entry_ip.insert(0, self.config.get("last_ip", "192.168.100.178"))
+        self.entry_ip.insert(0, initial_ip or "192.168.100.178")
         self.entry_ip.pack(side="left", padx=6)
 
         self.btn_auto_ip = ctk.CTkButton(
@@ -396,6 +413,14 @@ class PixelControlApp(ctk.CTk):
         self.entry_port = ctk.CTkEntry(port_frame, width=80, placeholder_text="5555")
         self.entry_port.insert(0, self.config.get("last_port", "5555"))
         self.entry_port.pack(side="right")
+
+        ctk.CTkLabel(
+            wifi_box,
+            text="💡 Port 5555 standard (ou le port à 5 chiffres de Débogage sans fil)",
+            font=ctk.CTkFont(size=11),
+            text_color="#9ca3af",
+            justify="left",
+        ).pack(anchor="w", padx=14, pady=(0, 4))
 
         # Action Wi-Fi
         self.btn_launch_wifi = ctk.CTkButton(
@@ -1124,20 +1149,19 @@ class PixelControlApp(ctk.CTk):
                                 self.run_on_ui(self.open_wifi_cast_window)
                                 return
 
-                            def notify_no_wifi():
-                                ans = messagebox.askyesno(
-                                    "Mode Débogage ADB non actif",
-                                    f"Votre téléphone est bien détecté sur le réseau Wi-Fi ({ip}), mais le mode débogage USB/ADB n'est pas activé sur l'appareil.\n\n"
-                                    "Voulez-vous ouvrir l'écran immédiatement en « Cast Wi-Fi Direct » (sans câble ni mode débogage requis) ?"
+                            def notify_adb_failed():
+                                msg = (
+                                    f"Connexion ADB refusée sur {ip}:{port}.\n\n"
+                                    "🔍 Si vous utilisez le « Débogage sans fil » d'Android :\n"
+                                    "1. Sur votre smartphone, allez dans « Paramètres > Système > Options pour les développeurs > Débogage sans fil ».\n"
+                                    f"2. Regardez la ligne « Adresse IP et port » (ex: {ip}:XXXXX).\n"
+                                    "3. Entrez ce port à 5 chiffres dans la case « Port TCP » de l'application puis réessayez.\n\n"
+                                    "🔌 Ou pour utiliser le port standard 5555 :\n"
+                                    "Branchez simplement le téléphone 2 secondes avec le câble USB au PC pour réactiver le pont 5555."
                                 )
-                                if ans:
-                                    self.open_wifi_cast_window()
-                                    self.info_label.configure(text=f"Cast Wi-Fi ouvert pour {ip}")
-                                else:
-                                    self.info_label.configure(
-                                        text="Pour le contrôle complet souris/clavier, branchez 1x le téléphone en USB."
-                                    )
-                            self.run_on_ui(notify_no_wifi)
+                                messagebox.showwarning("Connexion ADB Wi-Fi impossible", msg)
+                                self.info_label.configure(text=f"Vérifiez le port dans Débogage sans fil ({ip}:{port})")
+                            self.run_on_ui(notify_adb_failed)
                             return
 
             target_adb = ["-d"] if target_mode == "usb" else ["-s", f"{ip}:{port}"]
