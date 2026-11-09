@@ -836,7 +836,7 @@ class PixelControlApp(ctk.CTk):
         # Prioriser les autres appareils du Wi-Fi avant la passerelle/routeur
         return arp_peers + gateways
 
-    def _scan_target_adb_port(self, host):
+    def _scan_target_adb_port(self, host, deep_scan=False):
         """Détecte automatiquement le port ADB actif : 5555, mDNS, 8080 ou plage dynamique 30000-50000."""
         # 1. Port standard 5555
         try:
@@ -861,7 +861,10 @@ class PixelControlApp(ctk.CTk):
         except Exception:
             pass
 
-        # 4. Balayage automatique de la plage Débogage sans fil Android (35000-45000)
+        if not deep_scan:
+            return None
+
+        # 4. Balayage automatique ciblé de la plage Débogage sans fil Android (35000-45000)
         stop_event = threading.Event()
 
         def probe_port(p):
@@ -869,7 +872,7 @@ class PixelControlApp(ctk.CTk):
                 return None
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(0.2)
+                s.settimeout(0.18)
                 s.connect((host, p))
                 s.close()
                 stop_event.set()
@@ -934,14 +937,14 @@ class PixelControlApp(ctk.CTk):
                 h for h in self._extract_gateway_and_arp_peers(subnet) if h != my_ip
             ]
 
-            def probe_service(host):
-                p = self._scan_target_adb_port(host)
+            def probe_service_quick(host):
+                p = self._scan_target_adb_port(host, deep_scan=False)
                 if p:
                     return host, p
                 return None
 
             for h in priority_hosts:
-                hit = probe_service(h)
+                hit = probe_service_quick(h)
                 if hit:
                     return hit
 
@@ -951,7 +954,7 @@ class PixelControlApp(ctk.CTk):
                 if f"{subnet}.{i}" != my_ip and f"{subnet}.{i}" not in priority_hosts
             ]
             with concurrent.futures.ThreadPoolExecutor(max_workers=60) as ex:
-                for r in ex.map(probe_service, ips):
+                for r in ex.map(probe_service_quick, ips):
                     if r and r[0] != "127.0.0.1":
                         return r
 
@@ -963,9 +966,15 @@ class PixelControlApp(ctk.CTk):
                 self.cast_service.set_watched_phone_ips(refreshed_hosts)
 
             for h in refreshed_hosts:
-                hit = probe_service(h)
+                hit = probe_service_quick(h)
                 if hit:
                     return hit
+
+            # Balayage approfondi de la plage Débogage sans fil UNIQUEMENT sur l'appareil détecté
+            for h in refreshed_hosts:
+                p = self._scan_target_adb_port(h, deep_scan=True)
+                if p:
+                    return h, p
 
             # Fallback: return alive ARP / Hotspot Gateway peer so the user sees the phone IP!
             for h in refreshed_hosts:
@@ -1177,7 +1186,7 @@ class PixelControlApp(ctk.CTk):
                     conn_res = self.run_adb(["connect", f"{ip}:{port}"], timeout=8)
                     if "connected" not in conn_res.lower():
                         # Balayage dynamique automatique pour détecter le port sans fil s'il diffère
-                        auto_port = self._scan_target_adb_port(ip)
+                        auto_port = self._scan_target_adb_port(ip, deep_scan=True)
                         if auto_port and auto_port != "8080" and auto_port != port:
                             port = auto_port
                             self.run_on_ui(lambda: self.entry_port.delete(0, "end"))
