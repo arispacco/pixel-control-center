@@ -175,8 +175,8 @@ class PixelControlApp(ctk.CTk):
         try:
             cmd = [ADB_EXE] + args
             flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, creationflags=flags)
-            return res.stdout.strip()
+            res = subprocess.run(cmd, capture_output=True, timeout=timeout, creationflags=flags)
+            return (res.stdout or b"").decode("latin1", errors="replace").strip()
         except Exception as e:
             return f"Error: {e}"
 
@@ -797,13 +797,13 @@ class PixelControlApp(ctk.CTk):
         arp_peers = []
         if os.name == "nt":
             try:
-                ipcfg = subprocess.run(
+                res = subprocess.run(
                     ["ipconfig"],
                     capture_output=True,
-                    text=True,
                     timeout=3,
                     creationflags=subprocess.CREATE_NO_WINDOW,
-                ).stdout
+                )
+                ipcfg = (res.stdout or b"").decode("latin1", errors="replace")
                 for line in ipcfg.splitlines():
                     low = line.lower()
                     if "passerelle" in low or "gateway" in low:
@@ -815,13 +815,13 @@ class PixelControlApp(ctk.CTk):
                 pass
 
         try:
-            arp_out = subprocess.run(
+            res = subprocess.run(
                 ["arp", "-a"],
                 capture_output=True,
-                text=True,
                 timeout=3,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-            ).stdout
+            )
+            arp_out = (res.stdout or b"").decode("latin1", errors="replace")
             for line in arp_out.splitlines():
                 m = re.search(r"(\d+\.\d+\.\d+\.\d+)", line)
                 if not m:
@@ -833,8 +833,8 @@ class PixelControlApp(ctk.CTk):
         except Exception:
             pass
 
-        # Prioriser les autres appareils du Wi-Fi avant la passerelle/routeur
-        return arp_peers + gateways
+        # Sur partage de connexion (Hotspot), le smartphone EST la passerelle par défaut
+        return gateways + arp_peers
 
     def _scan_target_adb_port(self, host, deep_scan=False):
         """Détecte automatiquement le port ADB actif : 5555, mDNS, 8080 ou plage dynamique 30000-50000."""
