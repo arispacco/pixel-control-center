@@ -864,7 +864,7 @@ class PixelControlApp(ctk.CTk):
         if not deep_scan:
             return None
 
-        # 4. Balayage automatique ciblé de la plage Débogage sans fil Android (35000-45000)
+        # 4. Balayage automatique ciblé de la plage Débogage sans fil Android (33000-48000)
         stop_event = threading.Event()
 
         def probe_port(p):
@@ -880,8 +880,9 @@ class PixelControlApp(ctk.CTk):
             except Exception:
                 return None
 
-        priority_range = list(range(35000, 45001))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=200) as ex:
+        # Priorité aux plages les plus fréquentes d'Android (36000-45000), puis extension
+        priority_range = list(range(36000, 45001)) + list(range(33000, 36000)) + list(range(45001, 48001))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=250) as ex:
             futures = [ex.submit(probe_port, p) for p in priority_range]
             for f in concurrent.futures.as_completed(futures):
                 res = f.result()
@@ -947,6 +948,14 @@ class PixelControlApp(ctk.CTk):
                 hit = probe_service_quick(h)
                 if hit:
                     return hit
+
+            # Sur partage de connexion (Point d'accès mobile), le smartphone EST la passerelle (Gateway).
+            # Si le port 5555 n'est pas ouvert, scanner immédiatement la plage sans fil dynamique sur la passerelle
+            # sans attendre le balayage des 254 adresses du réseau :
+            for h in priority_hosts[:2]:
+                p = self._scan_target_adb_port(h, deep_scan=True)
+                if p:
+                    return h, p
 
             ips = [
                 f"{subnet}.{i}"
@@ -1180,6 +1189,20 @@ class PixelControlApp(ctk.CTk):
             port = self.entry_port.get().strip() or "5555"
 
             if target_mode == "wifi":
+                # Si l'IP indiquée est une adresse d'opérateur mobile (CGNAT 10.x.x.x ou 100.x.x.x affichée
+                # par Android en mode partage de connexion mais inaccessible depuis le PC), basculer immédiatement
+                # sur l'IP locale réelle du smartphone (passerelle Wi-Fi / Hotspot) :
+                if (ip.startswith("10.") or ip.startswith("100.")) and (not wifi or not any(ip in w for w in wifi)):
+                    auto_ip, auto_p = self.discover_pixel_ip()
+                    if auto_ip and auto_ip != ip:
+                        ip = auto_ip
+                        if auto_p:
+                            port = auto_p
+                        self.run_on_ui(lambda: self.update_ip_entry(ip))
+                        if auto_p:
+                            self.run_on_ui(lambda: self.entry_port.delete(0, "end"))
+                            self.run_on_ui(lambda: self.entry_port.insert(0, str(auto_p)))
+
                 # Vérifier si l'appareil est déjà connecté
                 if not wifi or not any(ip in w for w in wifi):
                     self.run_on_ui(lambda: self.info_label.configure(text="Connexion Wi-Fi au smartphone..."))
